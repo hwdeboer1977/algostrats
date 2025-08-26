@@ -72,7 +72,7 @@ async function main() {
   );
 
   // Dummy variable for actions
-  action = "";
+  action = "g";
 
   if (action === "approve") {
     console.log(`Approving ${assetSym} Max for vault…`);

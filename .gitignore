@@ -13,3 +13,8 @@ build/
 
 # Ignore log files
 *.log
+
+# Ignore these folders
+tests/
+tools/
+
