@@ -1,0 +1,25 @@
+{
+  "name": "bridge",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "type": "module",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@lifi/sdk": "^3.10.1",
+    "@rhino.fi/sdk": "^1.4.0",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.4",
+    "@wormhole-foundation/sdk": "^3.4.3",
+    "bs58": "^6.0.0",
+    "cross-fetch": "^4.1.0",
+    "dotenv": "^17.2.1",
+    "ethers": "^6.15.0",
+    "viem": "^2.35.1"
+  }
+}

@@ -16,5 +16,6 @@ build/
 
 # Ignore these folders
 tests/
-tools/
+tools/bridge/node_modules/
+tools/bridge/old/
 
