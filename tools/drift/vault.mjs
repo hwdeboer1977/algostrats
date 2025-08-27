@@ -2,12 +2,19 @@
 // One script to run Drift Vaults CLI with env defaults from ../../.env
 
 // Usage:
+
 // TO CHECK VAULT:   node vault.mjs view-vault --vault-address <VAULT_PUBKEY>
+
+// node .\vault.mjs list-vault-depositors --vault-address <VAULT_ADDRESS>
+
 // TO DEPOSIT IN VAULT:
 // node .\vault.mjs deposit `
 //   --vault-address A1B9MVput3r1jS91iu8ckdDiMSugXbQeEtvJEQsUHsPi `
 //   --deposit-authority BepvrzsLkmEF2ZwotqEsY8fKbCzQDaB228nPzfSirQDs `
 //   --amount 5
+
+// TO CHECK CURRENT STATUS
+// node .\vault.mjs view-vault-depositor --vault-depositor-address=BepvrzsLkmEF2ZwotqEsY8fKbCzQDaB228nPzfSirQDs
 
 import { spawn } from "child_process";
 import path from "path";
