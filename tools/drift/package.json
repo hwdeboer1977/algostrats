@@ -1,0 +1,21 @@
+{
+  "name": "drift",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "cli": "tsx ./node_modules/@drift-labs/vaults-sdk/cli/cli.ts"
+  },
+  "resolutions": {
+    "rpc-websockets": "7.11.0",
+    "@solana/web3.js": "1.91.6"
+  },
+  "dependencies": {
+    "@drift-labs/sdk": "^2.136.0-beta.3",
+    "@drift-labs/vaults-sdk": "^0.9.124"
+  }
+}

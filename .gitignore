@@ -18,4 +18,5 @@ build/
 tests/
 tools/bridge/node_modules/
 tools/bridge/old/
-
+tools/drift/node_modules/
+tools/drift/OLD/
