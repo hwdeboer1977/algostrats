@@ -1,5 +1,8 @@
 const path = require("path");
+// Load environment variables from .env file two levels up
 require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
+
+// Import LI.FI SDK components
 const {
   createConfig: createLifiConfig,
   EVM,
@@ -8,10 +11,14 @@ const {
   getRoutes,
   executeRoute,
 } = require("@lifi/sdk");
+
+// Import viem for EVM chain interactions
 const { createWalletClient, http, defineChain } = require("viem");
 const { privateKeyToAccount } = require("viem/accounts");
 
-// Bridge SOL → Arbitrum → Solana (USDC → USDC)
+// ---------------------------------------------------------
+// Example: Bridge USDC between Solana ↔ Arbitrum using LI.FI
+// ---------------------------------------------------------
 
 // --- EVM (Arbitrum) signer ---
 const arbitrum = defineChain({
@@ -30,7 +37,7 @@ let evmClient = createWalletClient({
 // --- Solana signer (backend only) ---
 const solAdapter = new KeypairWalletAdapter(process.env.WALLET_SOLANA_SECRET);
 
-// --- Wire up LI.FI providers ---
+// --- Configure LI.FI SDK with both providers ---
 createLifiConfig({
   integrator: "BlockstatNodeJS",
   providers: [
@@ -45,6 +52,7 @@ createLifiConfig({
 });
 
 async function main() {
+  // Parameters for bridge/route
   const params = {
     fromChainId: 42161, // Arbitrum
     toChainId: 1151111081099710, // Solana (LI.FI chain id)

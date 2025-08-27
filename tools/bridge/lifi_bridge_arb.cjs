@@ -1,5 +1,8 @@
 const path = require("path");
+// Load environment variables from .env file two levels up
 require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
+
+// Import LI.FI SDK components
 const {
   createConfig: createLifiConfig,
   EVM,
@@ -8,19 +11,27 @@ const {
   getRoutes,
   executeRoute,
 } = require("@lifi/sdk");
+
+// Import viem for EVM chain interactions
 const { createWalletClient, http, defineChain } = require("viem");
 const { privateKeyToAccount } = require("viem/accounts");
 
-// Bridge ARB → Solana → Arbitrum (USDC → USDC)
+// ---------------------------------------------------------
+// Example: Bridge USDC between Arbitrum ↔ Solana using LI.FI
+// ---------------------------------------------------------
 
 // --- EVM (Arbitrum) signer ---
 const arbitrum = defineChain({
   id: 42161,
-  name: "Arbitrum One",
+  name: "Arbitrum One", // Arbitrum chain ID
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: [process.env.ARBITRUM_ALCHEMY_MAINNET] } },
 });
+
+// Create an EVM account object from private key
 const evmAccount = privateKeyToAccount(process.env.WALLET_SECRET);
+
+// Create a wallet client for EVM
 let evmClient = createWalletClient({
   account: evmAccount,
   chain: arbitrum,
@@ -30,7 +41,7 @@ let evmClient = createWalletClient({
 // --- Solana signer (backend only) ---
 const solAdapter = new KeypairWalletAdapter(process.env.WALLET_SOLANA_SECRET);
 
-// --- Wire up LI.FI providers ---
+// --- Configure LI.FI SDK with both providers ---
 createLifiConfig({
   integrator: "BlockstatNodeJS",
   providers: [
@@ -45,18 +56,13 @@ createLifiConfig({
 });
 
 async function main() {
+  // Parameters for bridge/route
   const params = {
-    //fromChainId: 42161, // Arbitrum
-    //toChainId: 1151111081099710, // Solana (LI.FI chain id)
     fromChainId: 1151111081099710, // Solana (LI.FI chain id)
     toChainId: 42161, // Arbitrum
-    //fromTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // USDC (Arb)
-    //toTokenAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC (Sol)
     fromTokenAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC (Sol)
     toTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // USDC (ARB)
     fromAmount: "1000000", // 1 USDC (6 dp)
-    //fromAddress: evmAccount.address,
-    //toAddress: process.env.SOLANA_PUBKEY,
     fromAddress: process.env.SOLANA_PUBKEY,
     toAddress: evmAccount.address,
   };
