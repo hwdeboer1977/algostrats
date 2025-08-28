@@ -9,6 +9,8 @@ import dotenv from "dotenv";
 //      2. save VaultDepositor PDA (here: HAV28fu2797q662tZEjETQg1MmoLZjd8CGLejzuMJJuy)
 //      3. node .\vault.mjs view-vault-depositor --vault-depositor-address HAV28fu2797q662tZEjETQg1MmoLZjd8CGLejzuMJJuy
 
+// Check vault: node .\vault.mjs view-vault --vault-address A1B9MVput3r1jS91iu8ckdDiMSugXbQeEtvJEQsUHsPi
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
