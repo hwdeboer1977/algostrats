@@ -4,6 +4,7 @@
 
 - **vault.mjs** — wrapper that runs the Drift **Vaults CLI**, auto-loading RPC/keypair/env from `../../.env`.
 - **derive_depositor.mjs** — derives your **VaultDepositor PDA** from a vault + authority.
+- **read_position_info.mjs** - gives information on your current position in the vault.
 
 > Place both scripts in `tools/drift/`.
 
@@ -48,7 +49,7 @@ node vault.mjs request-withdraw --vault-address <VAULT_PUBKEY> --authority <YOUR
 node vault.mjs withdraw --vault-address <VAULT_PUBKEY> --authority <YOUR_PUBKEY>
 ```
 
-## Find your depositor PDA
+## Find your depositor PDA (via `derive_depositor.mjs`)
 
 ```bash
 # If SOLANA_PUBKEY is in .env:
@@ -56,4 +57,12 @@ node derive_depositor.mjs <VAULT_PUBKEY>
 
 # Or pass authority explicitly:
 node derive_depositor.mjs <VAULT_PUBKEY> <YOUR_PUBKEY>
+```
+
+## Find info current position (via `read_position_info.mjs`)
+
+```bash
+# If SOLANA_PUBKEY is in .env:
+node read_position_info.mjs
+
 ```
