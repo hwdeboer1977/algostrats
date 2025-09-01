@@ -11,6 +11,8 @@ export function WalletProvider({ children }) {
   const [nativeBalance, setNativeBalance] = useState(null);
 
   const listenersAttached = useRef(false);
+  const onAccountsChangedRef = useRef(null);
+  const onChainChangedRef = useRef(null);
 
   // On mount: detect already-connected accounts (no popup)
   useEffect(() => {
@@ -20,6 +22,7 @@ export function WalletProvider({ children }) {
         const accounts = await window.ethereum.request({
           method: "eth_accounts",
         });
+        console.log("[auto-init] eth_accounts:", accounts);
         if (accounts && accounts.length > 0) {
           const _provider = new ethers.BrowserProvider(window.ethereum);
           const _signer = await _provider.getSigner();
@@ -35,7 +38,7 @@ export function WalletProvider({ children }) {
           setNativeBalance(ethers.formatEther(bal));
         }
       } catch (e) {
-        console.warn("auto-init error:", e);
+        console.warn("[auto-init] error:", e);
       }
     })();
   }, []);
@@ -46,19 +49,36 @@ export function WalletProvider({ children }) {
       return;
     }
     try {
-      // 1) Request accounts (this triggers the popup)
-      const accounts = await window.ethereum.request({
+      console.log("[connect] requesting accounts…");
+      let accounts = await window.ethereum.request({
         method: "eth_requestAccounts",
       });
-      if (!accounts || accounts.length === 0) return;
 
-      // 2) Build provider/signer
+      // Fallback: some wallets may require explicit permission request
+      if (!accounts || accounts.length === 0) {
+        console.log("[connect] empty accounts, requesting permissions…");
+        try {
+          await window.ethereum.request({
+            method: "wallet_requestPermissions",
+            params: [{ eth_accounts: {} }],
+          });
+          accounts = await window.ethereum.request({ method: "eth_accounts" });
+        } catch (permErr) {
+          console.warn("[connect] wallet_requestPermissions failed:", permErr);
+        }
+      }
+
+      if (!accounts || accounts.length === 0) {
+        console.warn("[connect] still no accounts; aborting.");
+        return;
+      }
+
+      // Build provider/signer fresh on every connect
       const _provider = new ethers.BrowserProvider(window.ethereum);
       const _signer = await _provider.getSigner();
       const net = await _provider.getNetwork();
       const addr = accounts[0];
 
-      // 3) Set state
       setProvider(_provider);
       setSigner(_signer);
       setWalletAddress(addr);
@@ -66,6 +86,11 @@ export function WalletProvider({ children }) {
 
       const bal = await _provider.getBalance(addr);
       setNativeBalance(ethers.formatEther(bal));
+
+      console.log("[connect] connected:", {
+        addr,
+        chainId: Number(net.chainId),
+      });
     } catch (err) {
       console.error("[connect] error:", err);
       if (err && err.code === 4001) alert("Connection request was rejected.");
@@ -73,18 +98,47 @@ export function WalletProvider({ children }) {
   };
 
   const disconnectWallet = () => {
+    // Explicitly remove listeners so we can cleanly reattach on next connect
+    if (window.ethereum && listenersAttached.current) {
+      try {
+        if (onAccountsChangedRef.current) {
+          window.ethereum.removeListener(
+            "accountsChanged",
+            onAccountsChangedRef.current
+          );
+        }
+        if (onChainChangedRef.current) {
+          window.ethereum.removeListener(
+            "chainChanged",
+            onChainChangedRef.current
+          );
+        }
+      } catch (e) {
+        console.warn(
+          "[disconnect] removing listeners failed (safe to ignore):",
+          e
+        );
+      }
+      listenersAttached.current = false;
+      onAccountsChangedRef.current = null;
+      onChainChangedRef.current = null;
+    }
+
+    // Clear app state (wallet may still keep site permission)
     setProvider(null);
     setSigner(null);
     setWalletAddress(null);
     setChainId(null);
     setNativeBalance(null);
+    console.log("[disconnect] app state cleared.");
   };
 
-  // Attach listeners once
+  // Attach listeners once (and re-attach after a disconnect -> connect cycle)
   useEffect(() => {
     if (!window.ethereum || listenersAttached.current) return;
 
     const onAccountsChanged = async (accounts) => {
+      console.log("[listener] accountsChanged:", accounts);
       if (!accounts || accounts.length === 0) {
         disconnectWallet();
         return;
@@ -95,12 +149,15 @@ export function WalletProvider({ children }) {
         try {
           const bal = await provider.getBalance(addr);
           setNativeBalance(ethers.formatEther(bal));
-        } catch {}
+        } catch (e) {
+          console.error("[listener] balance refresh error:", e);
+        }
       }
     };
 
     const onChainChanged = async (hexId) => {
       const parsed = parseInt(hexId, 16);
+      console.log("[listener] chainChanged:", parsed, hexId);
       setChainId(parsed);
       try {
         const _provider = new ethers.BrowserProvider(window.ethereum);
@@ -112,18 +169,30 @@ export function WalletProvider({ children }) {
         const bal = await _provider.getBalance(addr);
         setNativeBalance(ethers.formatEther(bal));
       } catch (e) {
-        console.error("chainChanged reinit error:", e);
+        console.error("[listener] chainChanged reinit error:", e);
       }
     };
+
+    onAccountsChangedRef.current = onAccountsChanged;
+    onChainChangedRef.current = onChainChanged;
 
     window.ethereum.on("accountsChanged", onAccountsChanged);
     window.ethereum.on("chainChanged", onChainChanged);
     listenersAttached.current = true;
 
+    console.log("[listeners] attached.");
+
     return () => {
-      window.ethereum.removeListener("accountsChanged", onAccountsChanged);
-      window.ethereum.removeListener("chainChanged", onChainChanged);
+      try {
+        window.ethereum.removeListener("accountsChanged", onAccountsChanged);
+        window.ethereum.removeListener("chainChanged", onChainChanged);
+      } catch (e) {
+        console.warn("[listeners] cleanup error:", e);
+      }
       listenersAttached.current = false;
+      onAccountsChangedRef.current = null;
+      onChainChangedRef.current = null;
+      console.log("[listeners] cleaned up.");
     };
   }, [provider]);
 
