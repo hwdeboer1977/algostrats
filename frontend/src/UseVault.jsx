@@ -1,9 +1,9 @@
 // src/useVault.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ethers } from "ethers";
 import config from "./config.json";
 import { useWallet } from "./WalletProvider";
-import vaultAbi from "./abis/vault.json"; // <- your real ABI
+import vaultAbi from "./abis/vault.json"; // your real vault ABI
 
 // Minimal ERC20 ABI for the asset (WBTC)
 const erc20Abi = [
@@ -15,8 +15,7 @@ const erc20Abi = [
   "function approve(address spender, uint256 amount) returns (bool)",
 ];
 
-// Expected chain (so we can show a clear message if user is on the wrong network)
-const EXPECTED_CHAIN_ID = Number(config.chainId || 42161); // default Arbitrum
+const EXPECTED_CHAIN_ID = Number(config.chainId || 42161); // Arbitrum by default
 
 export function useVault({
   vaultAddress = config.vaultAddress,
@@ -42,8 +41,16 @@ export function useVault({
   // Balances
   const [balances, setBalances] = useState({
     userAsset: null, // user's WBTC
-    userShares: null, // user's yBTC (vault shares)
-    vaultTotalAssets: null, // total assets managed by the vault
+    userShares: null, // user's yBTC
+    vaultTotalAssets: null, // totalAssets()
+  });
+
+  // Share price state
+  const [price, setPrice] = useState({
+    assetsPerShareRaw: null, // BigInt (asset-wei per 1 share)
+    sharesPerAssetRaw: null, // BigInt (share-wei per 1 asset)
+    assetsPerShare: null, // string (asset units)
+    sharesPerAsset: null, // string (share units)
   });
 
   // Contract instances (null on wrong network)
@@ -82,7 +89,7 @@ export function useVault({
     };
   }, [asset, vault]);
 
-  // Refresh balances + total assets
+  // Refresh balances and total assets
   async function refresh() {
     if (!provider || !vault || !asset || !address) return;
     try {
@@ -97,14 +104,79 @@ export function useVault({
     }
   }
 
+  // ---- Share price refresh with race-protection & safe fallback ----
+  const priceReqId = useRef(0);
+
+  async function refreshPrices() {
+    if (!vault) return;
+    if (assetMeta.decimals == null || shareMeta.decimals == null) return;
+
+    const rid = ++priceReqId.current;
+
+    // Preferred path: ERC-4626 conversions
+    try {
+      const oneShare = ethers.parseUnits("1", shareMeta.decimals);
+      const oneAsset = ethers.parseUnits("1", assetMeta.decimals);
+
+      const [apsRaw, spaRaw] = await Promise.all([
+        vault.convertToAssets(oneShare), // returns asset-wei
+        vault.convertToShares(oneAsset), // returns share-wei
+      ]);
+
+      if (rid !== priceReqId.current) return; // stale result
+
+      setPrice({
+        assetsPerShareRaw: apsRaw,
+        sharesPerAssetRaw: spaRaw,
+        assetsPerShare: ethers.formatUnits(apsRaw, assetMeta.decimals), // format with ASSET decimals
+        sharesPerAsset: ethers.formatUnits(spaRaw, shareMeta.decimals), // format with SHARE decimals
+      });
+      return;
+    } catch {
+      // fall through to guarded fallback
+    }
+
+    // Guarded fallback: compute from totalAssets/totalSupply; ignore insane outputs
+    try {
+      const [totalAssets, totalSupply] = await Promise.all([
+        vault.totalAssets(),
+        vault.totalSupply?.() ?? 0n,
+      ]);
+
+      if (rid !== priceReqId.current) return; // stale result
+
+      if (totalSupply && totalSupply > 0n) {
+        // assets per 1 share (raw, asset-wei)
+        const apsRaw =
+          (totalAssets * 10n ** BigInt(shareMeta.decimals)) / totalSupply;
+
+        // sanity cap: ignore if absurdly large (likely transient RPC mismatch)
+        const maxSane = 10n ** BigInt(assetMeta.decimals + 6); // 1e6 assets/share
+        if (apsRaw > maxSane) return; // keep previous price
+
+        setPrice((prev) => ({
+          assetsPerShareRaw: apsRaw,
+          sharesPerAssetRaw: prev?.sharesPerAssetRaw ?? null,
+          assetsPerShare: ethers.formatUnits(apsRaw, assetMeta.decimals),
+          sharesPerAsset: prev?.sharesPerAsset ?? null,
+        }));
+      }
+      // else keep previous price silently
+    } catch {
+      // keep previous price
+    }
+  }
+
   // Auto-refresh on connect / network / account changes and each block
   useEffect(() => {
     let detach = () => {};
-    if (!provider || !address || !vault) return;
+    if (!provider || !vault) return;
+    if (assetMeta.decimals == null || shareMeta.decimals == null) return;
+
     (async () => {
-      await refresh();
+      await Promise.all([refresh(), refreshPrices()]);
       const onBlock = async () => {
-        await refresh();
+        await Promise.all([refresh(), refreshPrices()]);
       };
       provider.on("block", onBlock);
       detach = () => {
@@ -113,8 +185,17 @@ export function useVault({
         } catch {}
       };
     })();
+
     return detach;
-  }, [provider, address, vault, version, chainId]);
+  }, [
+    provider,
+    vault,
+    address,
+    version,
+    chainId,
+    assetMeta.decimals,
+    shareMeta.decimals,
+  ]);
 
   // Helpers for parse/format
   const formatAsset = (v) =>
@@ -140,10 +221,17 @@ export function useVault({
     setError("");
     try {
       const assets = parseAsset(amountStr);
+      // guard: must mint at least 1 wei of shares
+      const sharesOut = await vault.previewDeposit(assets);
+      if (sharesOut === 0n) {
+        throw new Error(
+          `Amount too small; increase deposit to mint at least one wei of ${shareMeta.symbol}.`
+        );
+      }
       await ensureApproval(assets);
       const tx = await vault.connect(signer).deposit(assets, address);
       await tx.wait();
-      await refresh();
+      await Promise.all([refresh(), refreshPrices()]);
     } catch (e) {
       setError(e?.message ?? "Deposit failed");
       throw e;
@@ -158,9 +246,16 @@ export function useVault({
     setError("");
     try {
       const assets = parseAsset(amountStr);
+      // guard: must burn at least 1 share-wei
+      const sharesBurn = await vault.previewWithdraw(assets);
+      if (sharesBurn === 0n) {
+        throw new Error(
+          `Amount too small to withdraw (rounds to zero shares). Try a larger amount.`
+        );
+      }
       const tx = await vault.connect(signer).withdraw(assets, address, address);
       await tx.wait();
-      await refresh();
+      await Promise.all([refresh(), refreshPrices()]);
     } catch (e) {
       setError(e?.message ?? "Withdraw failed");
       throw e;
@@ -175,9 +270,16 @@ export function useVault({
     setError("");
     try {
       const shares = parseShares(sharesStr);
+      // guard: must return at least 1 asset-wei
+      const assetsOut = await vault.previewRedeem(shares);
+      if (assetsOut === 0n) {
+        throw new Error(
+          `Shares too small to redeem (rounds to < 1 ${assetMeta.symbol} wei). Try a larger amount.`
+        );
+      }
       const tx = await vault.connect(signer).redeem(shares, address, address);
       await tx.wait();
-      await refresh();
+      await Promise.all([refresh(), refreshPrices()]);
     } catch (e) {
       setError(e?.message ?? "Redeem failed");
       throw e;
@@ -207,6 +309,9 @@ export function useVault({
       userShares: formatShares(balances.userShares),
       vaultTotalAssets: formatAsset(balances.vaultTotalAssets),
     },
+
+    // share price
+    price, // { assetsPerShareRaw, sharesPerAssetRaw, assetsPerShare, sharesPerAsset }
 
     // ops
     depositAssets,

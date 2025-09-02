@@ -47,6 +47,12 @@ export default function VaultInteractions() {
               <span className="font-semibold">Wallet:</span>{" "}
               {address.slice(0, 6)}…{address.slice(-4)}
             </div>
+            <div>
+              <span className="font-semibold">Share Price:</span>{" "}
+              {v.price.assetsPerShare != null
+                ? `${v.price.assetsPerShare} ${v.assetMeta.symbol} per 1 ${v.shareMeta.symbol}`
+                : "…"}
+            </div>
           </>
         )}
       </div>
