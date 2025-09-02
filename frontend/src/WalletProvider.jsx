@@ -36,7 +36,7 @@ const CHAINS = {
 
 export const WalletContext = createContext(null);
 
-// Fallback JSON-RPC (read-only) when not connected
+// Read-only fallback when not connected
 function makeReadonlyProvider(preferredChainId = 1) {
   const chain = CHAINS[preferredChainId] ?? CHAINS[1];
   return new ethers.JsonRpcProvider(chain.rpcUrls[0]);
@@ -51,16 +51,17 @@ export function WalletProvider({
     makeReadonlyProvider(defaultChainId)
   );
   const [browserProvider, setBrowserProvider] = useState(null); // ethers.BrowserProvider
-  const [injectedProvider, setInjectedProvider] = useState(null); // raw EIP-1193 provider (window.ethereum or EIP-6963)
+  const [injectedProvider, setInjectedProvider] = useState(null); // raw EIP-1193 provider
   const [signer, setSigner] = useState(null);
   const [address, setAddress] = useState(null);
   const [chainId, setChainId] = useState(defaultChainId);
   const [nativeBalance, setNativeBalance] = useState(null);
   const [availableWallets, setAvailableWallets] = useState([]); // EIP-6963 discovered wallets
+  const [version, setVersion] = useState(0); // bump to force refreshes
 
   const blockListenerAttached = useRef(false);
 
-  // EIP-6963 discovery (nice to have)
+  // EIP-6963 discovery
   useEffect(() => {
     const providers = new Map();
     const onAnnounce = (event) => {
@@ -75,13 +76,13 @@ export function WalletProvider({
       window.removeEventListener("eip6963:announceProvider", onAnnounce);
   }, []);
 
-  // effective provider for reads (signer if connected, else readonly)
+  // Effective provider for reads (signer if connected, else readonly)
   const provider = useMemo(
     () => signer?.provider ?? readonlyProvider,
     [signer, readonlyProvider]
   );
 
-  // Connect to a wallet (optionally a specific EIP-6963 provider)
+  // Connect (optionally a specific EIP-6963 provider)
   const connect = useCallback(async (wallet = null) => {
     const injected = wallet?.provider ?? window.ethereum;
     if (!injected) throw new Error("No injected wallet found.");
@@ -93,12 +94,13 @@ export function WalletProvider({
     const _signer = await bp.getSigner();
     const net = await bp.getNetwork();
 
-    setInjectedProvider(injected); // keep raw provider for EIP-1193 events
+    setInjectedProvider(injected);
     setBrowserProvider(bp);
     setSigner(_signer);
     setAddress(ethers.getAddress(_signer.address));
     setChainId(Number(net.chainId));
     localStorage.setItem("WALLET_CONNECTED", "1");
+    setVersion((v) => v + 1);
   }, []);
 
   const disconnect = useCallback(() => {
@@ -107,6 +109,7 @@ export function WalletProvider({
     setBrowserProvider(null);
     setInjectedProvider(null);
     localStorage.removeItem("WALLET_CONNECTED");
+    setVersion((v) => v + 1);
   }, []);
 
   // Silent auto-reconnect on mount
@@ -120,6 +123,7 @@ export function WalletProvider({
           .request({ method: "eth_accounts" })
           .catch(() => []);
         if (!accounts?.length) return;
+
         const bp = new ethers.BrowserProvider(injected, "any");
         const _signer = await bp.getSigner();
         const net = await bp.getNetwork();
@@ -129,13 +133,14 @@ export function WalletProvider({
         setSigner(_signer);
         setAddress(ethers.getAddress(_signer.address));
         setChainId(Number(net.chainId));
+        setVersion((v) => v + 1);
       } catch {
         /* ignore */
       }
     })();
   }, []);
 
-  // Listen to EIP-1193 events on the RAW provider (not on ethers BrowserProvider)
+  // EIP-1193 listeners — use RAW injected provider (not ethers)
   useEffect(() => {
     const inj = injectedProvider ?? window.ethereum;
     if (!inj?.on) return;
@@ -144,13 +149,26 @@ export function WalletProvider({
       if (!accs?.length) return disconnect();
       setAddress(ethers.getAddress(accs[0]));
       if (browserProvider) setSigner(await browserProvider.getSigner());
+      setVersion((v) => v + 1);
     };
 
     const onChainChanged = async (hexChainId) => {
       const n = Number(hexChainId);
-      setChainId(n);
-      if (browserProvider) setSigner(await browserProvider.getSigner());
-      if (CHAINS[n]) setReadonlyProvider(makeReadonlyProvider(n));
+      try {
+        // Rebuild BrowserProvider + Signer so downstream memos/effects refresh
+        const bp = new ethers.BrowserProvider(inj, "any");
+        const _signer = await bp.getSigner().catch(() => null);
+
+        setBrowserProvider(bp);
+        setSigner(_signer);
+        setChainId(n);
+        setNativeBalance(null); // force re-fetch on next block
+
+        if (CHAINS[n]) setReadonlyProvider(makeReadonlyProvider(n));
+        setVersion((v) => v + 1);
+      } catch {
+        /* ignore */
+      }
     };
 
     inj.on("accountsChanged", onAccountsChanged);
@@ -161,7 +179,7 @@ export function WalletProvider({
     };
   }, [injectedProvider, browserProvider, disconnect]);
 
-  // Native balance updates on each new block (only when connected)
+  // Native balance updates on new blocks (when connected)
   useEffect(() => {
     if (!balanceOnBlock || !provider || !address) return;
     if (blockListenerAttached.current) return;
@@ -177,14 +195,14 @@ export function WalletProvider({
     };
 
     provider.on("block", onBlock);
-    onBlock(); // initial
+    onBlock(); // initial fetch
     return () => {
       try {
         provider.off("block", onBlock);
       } catch {}
       blockListenerAttached.current = false;
     };
-  }, [provider, address, balanceOnBlock]);
+  }, [provider, address, balanceOnBlock, version]);
 
   // Switch chain with addChain fallback
   const switchChain = useCallback(
@@ -239,6 +257,7 @@ export function WalletProvider({
       provider, // ethers Provider for reads
       signer, // ethers Signer for writes
       availableWallets,
+      version, // bumping when accounts/chain changes
 
       // actions
       connect,
@@ -253,6 +272,7 @@ export function WalletProvider({
       nativeBalance,
       provider,
       availableWallets,
+      version,
       connect,
       disconnect,
       switchChain,
@@ -273,12 +293,13 @@ export function useWallet() {
 }
 
 export function useContract(address, abi, withSigner = true) {
-  const { provider, signer } = useWallet();
+  const { provider, signer, version } = useWallet();
   return useMemo(() => {
     if (!address || !abi || !provider) return null;
     const runner = withSigner && signer ? signer : provider;
     return new ethers.Contract(address, abi, runner);
-  }, [address, abi, provider, signer, withSigner]);
+    // depend on version so contract instance refreshes after chain switch
+  }, [address, abi, provider, signer, withSigner, version]);
 }
 
 const erc20Abi = [
@@ -290,7 +311,7 @@ const erc20Abi = [
 const decimalsCache = new Map();
 
 export function useERC20Balance(tokenAddress, ownerAddress) {
-  const { provider } = useWallet();
+  const { provider, version } = useWallet();
   const [raw, setRaw] = useState(null);
   const [decimals, setDecimals] = useState(null);
   const [symbol, setSymbol] = useState(null);
@@ -321,10 +342,8 @@ export function useERC20Balance(tokenAddress, ownerAddress) {
         }
       }
     })();
-    return () => {
-      stop = true;
-    };
-  }, [provider, tokenAddress, ownerAddress]);
+    // re-run on chain/account/provider changes via `version`
+  }, [provider, tokenAddress, ownerAddress, version]);
 
   const formatted = useMemo(() => {
     if (raw == null || decimals == null) return null;
