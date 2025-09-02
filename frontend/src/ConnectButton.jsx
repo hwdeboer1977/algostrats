@@ -26,25 +26,28 @@ export default function ConnectButton() {
 
   if (connected) {
     return (
-      <div className="flex flex-col gap-2 items-start p-4 border rounded-xl bg-white shadow-sm">
-        <div className="flex items-center gap-2 text-sm">
-          <span className="px-2 py-1 rounded bg-gray-100">
+      <div className="p-4 border rounded-xl bg-white shadow-sm">
+        <div className="space-y-2 text-sm">
+          <div>
+            <span className="font-semibold">Chain:</span>{" "}
             {chain?.name ?? "Unknown"}
-          </span>
-          <span className="px-2 py-1 rounded bg-gray-100">
+          </div>
+          <div>
+            <span className="font-semibold">Native Balance:</span>{" "}
             {nativeBalance != null
               ? `${Number(ethers.formatEther(nativeBalance)).toFixed(4)} ${
                   chain?.native ?? "ETH"
                 }`
               : "…"}
-          </span>
-          <span className="px-2 py-1 rounded bg-gray-100 font-mono">
+          </div>
+          <div>
+            <span className="font-semibold">Wallet Address:</span>{" "}
             {address.slice(0, 6)}…{address.slice(-4)}
-          </span>
+          </div>
         </div>
         <button
           onClick={disconnect}
-          className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
+          className="mt-4 px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
         >
           Disconnect
         </button>

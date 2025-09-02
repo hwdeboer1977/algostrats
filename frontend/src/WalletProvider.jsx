@@ -15,7 +15,7 @@ const CHAINS = {
     chainId: "0x1",
     name: "Ethereum",
     native: "ETH",
-    rpcUrls: ["https://rpc.ankr.com/eth"],
+    rpcUrls: ["https://cloudflare-eth.com"],
     blockExplorerUrls: ["https://etherscan.io"],
   },
   42161: {
