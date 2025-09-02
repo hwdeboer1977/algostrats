@@ -1,16 +1,25 @@
 import React from "react";
 import ConnectButton from "./ConnectButton";
 import VaultInteractions from "./VaultInteractions";
+import Card from "./Card";
+import "./App.css";
 
 export default function App() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="text-center">
-        <h1 className="text-2xl font-bold mb-6">My App</h1>
-        <ConnectButton />
-        <h1 className="text-2xl font-bold mb-6">More info here</h1>
-        <VaultInteractions />
-      </div>
+    <div className="shell">
+      <header className="shell__top">
+        <h3>Algostrats</h3>
+      </header>
+
+      <main className="grid">
+        <Card title="Wallet">
+          <ConnectButton />
+        </Card>
+
+        <Card title="Vault">
+          <VaultInteractions />
+        </Card>
+      </main>
     </div>
   );
 }

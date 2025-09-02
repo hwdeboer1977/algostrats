@@ -22,8 +22,6 @@ export default function VaultInteractions() {
 
   return (
     <div className="w-full max-w-lg rounded-2xl border bg-white p-5 shadow-sm">
-      <h2 className="text-lg font-semibold mb-3">Vault</h2>
-
       <div className="text-sm space-y-1 mb-4">
         <div>
           <span className="font-semibold">Chain:</span>{" "}
