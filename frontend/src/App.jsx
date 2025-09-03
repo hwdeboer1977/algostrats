@@ -8,7 +8,7 @@ export default function App() {
   return (
     <div className="shell">
       <header className="shell__top">
-        <h3>Algostrats</h3>
+        <h1>Algostrats</h1>
       </header>
 
       <main className="grid">

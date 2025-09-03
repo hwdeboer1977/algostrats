@@ -76,25 +76,27 @@ export default function VaultInteractions() {
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="row">
         <button
           disabled={!connected || v.loading}
           onClick={() => v.depositAssets(amount)}
-          className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-50"
+          className="btn btn--primary"
         >
           Deposit
         </button>
+
         <button
           disabled={!connected || v.loading}
           onClick={() => v.withdrawAssets(amount)}
-          className="rounded-xl bg-gray-200 px-4 py-2 disabled:opacity-50"
+          className="btn btn--secondary"
         >
           Withdraw (assets)
         </button>
+
         <button
           disabled={!connected || v.loading}
           onClick={() => v.redeemShares(amount)}
-          className="rounded-xl bg-gray-200 px-4 py-2 disabled:opacity-50"
+          className="btn btn--secondary"
         >
           Redeem (shares)
         </button>

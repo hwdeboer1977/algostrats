@@ -5,42 +5,6 @@
   text-align: center;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
-}
-
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
-}
-
-.card {
-  padding: 2em;
-}
-
-.read-the-docs {
-  color: #888;
-}
-
 /* Shell & grid */
 .shell {
   min-height: 100dvh;
@@ -52,9 +16,11 @@
   padding: 24px 16px;
 }
 .shell__top h1 {
-  font-size: 22px;
-  font-weight: 700;
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: -1px;
   margin: 0;
+  color: #0f172a; /* darker navy tone */
 }
 .grid {
   max-width: 1100px;
@@ -78,9 +44,12 @@
   font-weight: 600;
   border-bottom: 1px solid #eef2f7;
   background: linear-gradient(#fff, #fafbfc);
+  font-size: 20px; /* unified title size */
 }
 .card__body {
-  padding: 16px;
+  font-size: 20px; /* unified body size */
+  line-height: 1.7;
+  padding: 20px;
 }
 .card__actions {
   padding: 12px 16px;
@@ -90,12 +59,13 @@
 
 /* Layout helpers */
 .stack > * + * {
-  margin-top: 10px;
+  margin-top: 16px;
 }
 .row {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
+  margin-top: 10px;
 }
 .mt-12 {
   margin-top: 12px;
@@ -107,6 +77,11 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
+  padding: 8px 0;
+  line-height: 1.7;
+}
+.kv + .kv {
+  margin-top: 10px;
 }
 .kv span {
   color: #6b7280;
@@ -121,7 +96,7 @@
   background: #f3f5f8;
   padding: 2px 6px;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 13px; /* unified size */
 }
 
 /* Pills / alerts */
@@ -129,11 +104,13 @@
   background: #f8fafc;
   border: 1px solid #e9eef5;
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 12px;
+  margin-top: 8px;
 }
 .hint {
   color: #6b7280;
   font-size: 12px;
+  margin-top: 6px;
 }
 .alert {
   background: #fee2e2;
@@ -153,10 +130,14 @@
 .label {
   font-size: 13px;
   font-weight: 600;
+  display: block;
+  margin-top: 8px;
 }
 .input {
   width: 100%;
-  padding: 10px 12px;
+  margin-top: 6px;
+  font-size: 15px;
+  padding: 12px;
   border-radius: 10px;
   border: 1px solid #e2e8f0;
   outline: none;
@@ -166,34 +147,51 @@
   border-color: #94a3b8;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
+/* ---------- Button color variants ---------- */
 
-.btn {
-  appearance: none;
-  border: 1px solid #111827;
-  background: #111827;
+/* Primary action (e.g., Deposit) */
+.btn--primary {
+  background: #16a34a; /* green-600 */
+  border-color: #16a34a;
   color: #fff;
-  padding: 9px 14px;
-  border-radius: 10px;
-  font-weight: 600;
-  cursor: pointer;
 }
-.btn:hover {
-  filter: brightness(0.95);
-}
-.btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+.btn--primary:hover {
+  background: #16a34a; /* green-600 */
+  border-color: #16a34a;
 }
 
-.btn--ghost {
-  background: #fff;
-  color: #111827;
-  border: 1px solid #e5e7eb;
+/* Secondary / neutral (e.g., Withdraw) */
+.btn--secondary {
+  background: #16a34a; /* green-600 */
+  border-color: #16a34a;
+  color: #fff;
 }
+.btn--secondary:hover {
+  background: #e5e7eb; /* gray-200 */
+}
+
+/* Success (optional, e.g., Confirm actions) */
+.btn--success {
+  background: #16a34a; /* green-600 */
+  border-color: #16a34a;
+  color: #fff;
+}
+.btn--success:hover {
+  background: #15803d; /* green-700 */
+  border-color: #15803d;
+}
+
+/* Danger (already exists, but let’s make hover stronger) */
 .btn--danger {
-  background: #dc2626;
+  background: #dc2626; /* red-600 */
   border-color: #dc2626;
+  color: #fff;
 }
+.btn--danger:hover {
+  background: #b91c1c; /* red-700 */
+  border-color: #b91c1c;
+}
+
 .link {
   background: transparent;
   border: 0;

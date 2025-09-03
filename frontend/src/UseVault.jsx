@@ -100,7 +100,8 @@ export function useVault({
       ]);
       setBalances({ userAsset, userShares, vaultTotalAssets: totalAssets });
     } catch (e) {
-      setError(e?.message ?? "Failed to load balances");
+      // transient read failure: don't surface to UI
+      console.debug("[refresh] read failed:", e?.message || e);
     }
   }
 

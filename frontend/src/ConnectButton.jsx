@@ -45,10 +45,7 @@ export default function ConnectButton() {
             {address.slice(0, 6)}…{address.slice(-4)}
           </div>
         </div>
-        <button
-          onClick={disconnect}
-          className="mt-4 px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
-        >
+        <button onClick={disconnect} className="btn btn--danger mt-4">
           Disconnect
         </button>
       </div>
@@ -57,10 +54,7 @@ export default function ConnectButton() {
 
   return (
     <>
-      <button
-        onClick={handleClick}
-        className="px-4 py-2 rounded-xl bg-black text-white hover:opacity-90"
-      >
+      <button onClick={handleClick} className="btn btn--primary">
         Connect Wallet
       </button>
 
@@ -77,7 +71,7 @@ export default function ConnectButton() {
                     await connect(entry);
                     setShowModal(false);
                   }}
-                  className="flex items-center justify-between rounded-lg border px-4 py-2 hover:bg-gray-50"
+                  className="btn btn--secondary flex items-center justify-between"
                 >
                   <span>{entry.info.name}</span>
                   <span className="text-xs text-gray-500">
@@ -89,7 +83,7 @@ export default function ConnectButton() {
             <div className="mt-4 flex justify-end">
               <button
                 onClick={() => setShowModal(false)}
-                className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+                className="btn btn--secondary"
               >
                 Cancel
               </button>
