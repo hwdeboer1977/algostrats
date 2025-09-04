@@ -1,0 +1,20 @@
+{
+  "name": "keeper",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bullmq": "^5.58.4",
+    "dotenv": "^17.2.2",
+    "ethers": "^6.15.0",
+    "ioredis": "^5.7.0"
+  }
+}
