@@ -1,4 +1,4 @@
-// read_position_info_from_cli.mjs
+// read_position_info.mjs
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -15,7 +15,7 @@ dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 const { getDriftVaultProgram, VAULT_PROGRAM_ID } = pkg;
 const execFileP = promisify(execFile);
 
-// --- Config (your addresses) ---
+// --- Config (addresses) ---
 const RPC_URL = process.env.SOLANA_RPC;
 const VAULT_ADDRESS = new PublicKey(
   "A1B9MVput3r1jS91iu8ckdDiMSugXbQeEtvJEQsUHsPi"
@@ -26,7 +26,7 @@ const DEPOSITOR_ADDRESS = new PublicKey(
 
 // Path to your existing CLI script (adjust if needed)
 const CLI_PATH = path.resolve(__dirname, "./vault.mjs"); // same folder; change if elsewhere
-// --------------------------------
+// --------------------------
 
 const toBigInt = (x) =>
   typeof x === "bigint"
@@ -63,7 +63,7 @@ async function getVaultEquityUSDCfromCLI(vaultAddr) {
     process.execPath,
     [CLI_PATH, "view-vault", "--vault-address", vaultAddr],
     {
-      env: { ...process.env, RPC_URL: RPC_URL }, // pass your RPC through
+      env: { ...process.env, RPC_URL: RPC_URL },
       windowsHide: true,
       maxBuffer: 2 * 1024 * 1024,
     }
@@ -80,21 +80,26 @@ async function getVaultEquityUSDCfromCLI(vaultAddr) {
     );
   }
   const usd = parseFloat(m[1].replace(/,/g, ""));
-  // return in base units (6 dp):
+  // Return in base units (6 dp, USDC)
   return BigInt(Math.round(usd * 1e6));
 }
 
-async function main() {
+// === NEW: library exports your keeper can call ===
+
+/**
+ * Returns a detailed snapshot (useful for dashboards/logs).
+ * All monetary values are base-6 (USDC) BigInt unless stated otherwise.
+ */
+export async function getDriftSnapshot() {
   const connection = new Connection(RPC_URL, "confirmed");
   const program = await getDriftVaultProgram(connection);
 
-  // Anchor fetch for shares & depositor flows
   const vault = await program.account.vault.fetch(VAULT_ADDRESS);
   const depositor = await program.account.vaultDepositor.fetch(
     DEPOSITOR_ADDRESS
   );
 
-  // Deposit mint decimals (USDC → 6)
+  // decimals
   let decimals = 6;
   try {
     const mintPk = new PublicKey(
@@ -117,42 +122,65 @@ async function main() {
     bnPick(depositor, "netDeposits") ||
     bnPick(depositor, "totalDeposits") - bnPick(depositor, "totalWithdraws");
 
-  // Get USD equity straight from your CLI (which already resolves oracles)
   const vaultEquityUSDCBase = await getVaultEquityUSDCfromCLI(
     VAULT_ADDRESS.toBase58()
   );
 
-  // PPS & your balance
   const SCALE = 1_000_000_000n;
   const ppsScaled =
     totalShares > 0n ? (vaultEquityUSDCBase * SCALE) / totalShares : SCALE;
   const yourBalance = (yourShares * ppsScaled) / SCALE;
-
   const earnings = yourBalance - netDeposits;
-  const roiPct =
-    netDeposits > 0n ? (Number(earnings) / Number(netDeposits)) * 100 : 0;
+  const roiPct = Number(
+    netDeposits > 0n ? (Number(earnings) / Number(netDeposits)) * 100 : 0
+  );
 
-  console.log("=== Drift Vault Position (USD via CLI equity) ===");
-  console.log("Program ID :", VAULT_PROGRAM_ID.toBase58());
-  console.log("Vault      :", VAULT_ADDRESS.toBase58());
-  console.log("Depositor  :", DEPOSITOR_ADDRESS.toBase58());
-  console.log("");
-  console.log(
-    "vaultEquity (USDC, base units):",
-    vaultEquityUSDCBase.toString()
-  );
-  console.log(
-    "Your shares / Total shares   :",
-    yourShares.toString(),
-    "/",
-    totalShares.toString()
-  );
-  console.log("Net Deposits                 :", fmtBase(netDeposits, decimals));
-  console.log("Balance (USD)                :", fmtBase(yourBalance, decimals));
-  console.log("Earnings (USD)               :", fmtBase(earnings, decimals));
-  console.log(`ROI                          : ${roiPct.toFixed(2)}%`);
+  return {
+    programId: VAULT_PROGRAM_ID.toBase58(),
+    vaultAddress: VAULT_ADDRESS.toBase58(),
+    depositorAddress: DEPOSITOR_ADDRESS.toBase58(),
+    vaultEquityUSDCBase, // BigInt base-6
+    totalShares, // BigInt
+    yourShares, // BigInt
+    netDeposits, // BigInt base-6
+    yourBalance, // BigInt base-6
+    earnings, // BigInt base-6
+    roiPct, // Number
+    decimals,
+    fmt: {
+      netDeposits: fmtBase(netDeposits, decimals),
+      balance: fmtBase(yourBalance, decimals),
+      earnings: fmtBase(earnings, decimals),
+      equityUSD: (Number(vaultEquityUSDCBase) / 1e6).toFixed(6),
+    },
+  };
 }
 
-main().catch((e) => {
-  console.error("read_position_info_from_cli failed:", e);
-});
+// keep your CLI output when run directly:
+if (import.meta.main) {
+  (async () => {
+    try {
+      const s = await getDriftSnapshot();
+      console.log("Program ID :", s.programId);
+      console.log("Vault      :", s.vaultAddress);
+      console.log("Depositor  :", s.depositorAddress);
+      console.log("");
+      console.log(
+        "vaultEquity (USDC, base units):",
+        s.vaultEquityUSDCBase.toString()
+      );
+      console.log(
+        "Your shares / Total shares   :",
+        s.yourShares.toString(),
+        "/",
+        s.totalShares.toString()
+      );
+      console.log("Net Deposits                 :", s.fmt.netDeposits);
+      console.log("Balance (USD)                :", s.fmt.balance);
+      console.log("Earnings (USD)               :", s.fmt.earnings);
+      console.log(`ROI                          : ${s.roiPct.toFixed(2)}%`);
+    } catch (e) {
+      console.error("read_position_info_from_cli failed:", e);
+    }
+  })();
+}
