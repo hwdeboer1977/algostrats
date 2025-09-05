@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 """
-create_orders.py — Hyperliquid-only (no CLI)
+create_orders.py — Hyperliquid-only (minimal args)
 
-What this script provides:
-- get_account_summary(): returns a dict summary (equity, balances, open orders, open positions)
-- open_market(coin, side, size, slippage_frac=0.01)
-- close_market(coin)
-- cancel_resting_orders(coin)
+Now supports an optional ACTION positional argument to override the USER CONFIG.
+Examples:
+  python create_orders.py summary
+  python create_orders.py open coin=ETH side=buy size=0.25 slippage=0.01
+  python create_orders.py close coin=ETH
+  python create_orders.py cancel coin=ETH
 
-How to use:
-1) Put this file next to your existing example_utils.py and config.json.
-2) Edit the USER CONFIG block below to choose an ACTION and params.
-3) Run:  python create_orders.py
+If no args are provided, it falls back to the USER CONFIG block.
 """
 
 from __future__ import annotations
 import json
-from typing import Any, Dict, List, Optional
+import sys
+from typing import Any, Dict, List
 
 from hyperliquid.utils import constants
 from hyperliquid.info import Info
@@ -30,16 +29,18 @@ import example_utils  # must be in the same folder
 # Choose exactly one ACTION: "summary", "open", "close", "cancel"
 ACTION: str = "summary"
 
-# Parameters if you want to open a new position
+# For ACTION == "open"
 OPEN_PARAMS = {
-    "coin": "ETH",          # Which perp (e.g., ETH, BTC, SOL)
-    "side": "buy",          # Direction: "buy"/"long" or "sell"/"short"
-    "size": 0.25,           # Position size (contracts, e.g. ETH = 0.25 ETH-perp)
-    "slippage_frac": 0.01,  # Max slippage fraction allowed (1% here)
+    "coin": "ETH",     # e.g., "ETH", "BTC", "SOL"
+    "side": "buy",     # "buy"/"long" or "sell"/"short"
+    "size": 0.25,      # contract size
+    "slippage_frac": 0.01,  # 1% max slippage
 }
 
-# Parameters if you want to close or cancel
+# For ACTION == "close"
 CLOSE_COIN: str = "ETH"
+
+# For ACTION == "cancel"
 CANCEL_COIN: str = "ETH"
 
 
@@ -48,46 +49,38 @@ CANCEL_COIN: str = "ETH"
 # =========================
 
 def _pretty(obj: Any) -> str:
-    """Format dicts/lists into pretty JSON for printing."""
     return json.dumps(obj, indent=2, sort_keys=False, ensure_ascii=False)
 
 
 def _setup(skip_ws: bool = True):
-    """
-    Wrapper around example_utils.setup().
-    This loads config.json, builds an account, and returns:
-    (address, info, exchange)
-    - address: your wallet address
-    - info:    Hyperliquid Info client (read-only API calls)
-    - exchange:Hyperliquid Exchange client (trading actions)
-    """
+    """Reuses your example_utils.setup() with MAINNET URL and returns (address, info, exchange)."""
     return example_utils.setup(base_url=constants.MAINNET_API_URL, skip_ws=skip_ws)
 
 
 def get_account_summary() -> Dict[str, Any]:
     """
-    Collect account state into a dict:
-      - Margin summary (account value, pnl, margin used, etc.)
-      - Spot balances
-      - Open orders
-      - Open perp positions
-      - A sample of mid prices for reference
+    Returns a dictionary with:
+      - marginSummary subset
+      - spot balances
+      - open orders
+      - open perp positions
+      - mids sample
     """
     address, info, _ = _setup(skip_ws=True)
     result: Dict[str, Any] = {"address": address}
 
-    # Pull overall margin/account stats
+    # margin summary
     user_state = info.user_state(address)
     result["marginSummary"] = user_state.get("marginSummary", {})
 
-    # Pull spot wallet balances
+    # spot balances
     spot_user_state = info.spot_user_state(address)
     result["spotBalances"] = spot_user_state.get("balances", [])
 
-    # Pull open perp orders
+    # open orders
     result["openOrders"] = info.open_orders(address)
 
-    # Extract open positions (filter out empty ones with size 0)
+    # open positions (non-zero szi)
     positions = user_state.get("assetPositions", [])
     open_positions = []
     for p in positions:
@@ -100,11 +93,11 @@ def get_account_summary() -> Dict[str, Any]:
             open_positions.append(p)
     result["openPositions"] = open_positions
 
-    # Sample some mid prices to get a quick market view
+    # mids snapshot (subset to keep output readable)
     try:
         mids = info.all_mids()
         if isinstance(mids, dict):
-            sample = dict(list(mids.items())[:8])  # only first 8 to keep output readable
+            sample = dict(list(mids.items())[:8])
             result["midsSample"] = sample
     except Exception:
         result["midsSample"] = {}
@@ -115,10 +108,8 @@ def get_account_summary() -> Dict[str, Any]:
 def open_market(coin: str, side: str, size: float, slippage_frac: float = 0.01) -> Dict[str, Any]:
     """
     Market open a position.
-    - coin: e.g., "ETH"
-    - side: "buy"/"long" or "sell"/"short"
-    - size: position size in contracts
-    - slippage_frac: maximum slippage allowed (e.g., 0.01 = 1%)
+    side: 'buy' or 'sell' (also accepts 'long'/'short')
+    size: contract size in the coin units (e.g. ETH for ETH-perp)
     """
     is_buy = side.lower() in ("buy", "long")
     _, _, exchange = _setup(skip_ws=True)
@@ -127,19 +118,14 @@ def open_market(coin: str, side: str, size: float, slippage_frac: float = 0.01) 
 
 
 def close_market(coin: str) -> Dict[str, Any]:
-    """
-    Market-close the current position in `coin`.
-    Always reduce-only (no accidental flip).
-    """
+    """Reduce-only market close for the coin's current position."""
     _, _, exchange = _setup(skip_ws=True)
     res = exchange.market_close(coin)
     return {"action": "close", "coin": coin, "result": res}
 
 
 def cancel_resting_orders(coin: str) -> Dict[str, Any]:
-    """
-    Cancel all open limit orders for `coin`.
-    """
+    """Cancel all resting orders for a specific coin for the configured address."""
     address, info, exchange = _setup(skip_ws=True)
     oo = info.open_orders(address)
     targets: List[Dict[str, Any]] = [o for o in oo if o.get("coin") == coin]
@@ -157,20 +143,69 @@ def cancel_resting_orders(coin: str) -> Dict[str, Any]:
 
 
 # =========================
+# ==== ARG PARSING ========
+# =========================
+
+def _apply_kv_overrides(pairs: list[str]) -> None:
+    """
+    Apply simple key=value overrides from the command line to the config vars.
+    Supported keys:
+      - For open: coin, side, size, slippage or slippage_frac
+      - For close/cancel: coin
+    """
+    global OPEN_PARAMS, CLOSE_COIN, CANCEL_COIN
+    for raw in pairs:
+        if "=" not in raw:
+            continue
+        k, v = raw.split("=", 1)
+        k = k.strip().lower()
+        v = v.strip()
+
+        if k in ("coin", "side"):
+            OPEN_PARAMS[k] = v
+            if k == "coin":
+                CLOSE_COIN = v
+                CANCEL_COIN = v
+        elif k in ("size",):
+            try:
+                OPEN_PARAMS["size"] = float(v)
+            except ValueError:
+                pass
+        elif k in ("slippage", "slippage_frac"):
+            try:
+                OPEN_PARAMS["slippage_frac"] = float(v)
+            except ValueError:
+                pass
+
+
+def _resolve_action_from_argv(default_action: str) -> str:
+    """
+    Allows: python create_orders.py <action> [key=value ...]
+    e.g.,   python create_orders.py open coin=ETH side=buy size=0.5 slippage=0.01
+    """
+    if len(sys.argv) >= 2:
+        action = sys.argv[1].lower()
+        if action in ("summary", "open", "close", "cancel"):
+            # Apply optional key=value overrides
+            if len(sys.argv) > 2:
+                _apply_kv_overrides(sys.argv[2:])
+            return action
+    return default_action
+
+
+# =========================
 # ========= MAIN ==========
 # =========================
 
 def main():
-    """
-    Entry point.
-    Executes the action chosen in USER CONFIG and prints results.
-    """
-    if ACTION == "summary":
+    action = _resolve_action_from_argv(ACTION)
+
+    if action == "summary":
         summary = get_account_summary()
         print("\n🔎 Account Summary")
         print(_pretty(summary))
 
-    elif ACTION == "open":
+    elif action == "open":
         coin = OPEN_PARAMS["coin"]
         side = OPEN_PARAMS["side"]
         size = float(OPEN_PARAMS["size"])
@@ -179,18 +214,18 @@ def main():
         print("\n🚀 Open Market Result")
         print(_pretty(result))
 
-    elif ACTION == "close":
+    elif action == "close":
         result = close_market(CLOSE_COIN)
         print("\n🔚 Close Market Result")
         print(_pretty(result))
 
-    elif ACTION == "cancel":
+    elif action == "cancel":
         result = cancel_resting_orders(CANCEL_COIN)
         print("\n🧹 Cancel Orders Result")
         print(_pretty(result))
 
     else:
-        print(f"Unknown ACTION: {ACTION}. Valid: 'summary', 'open', 'close', 'cancel'.")
+        print(f"Unknown ACTION: {action}. Valid: 'summary', 'open', 'close', 'cancel'.")
 
 
 if __name__ == "__main__":
