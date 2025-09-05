@@ -2,6 +2,7 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const { ethers } = require("ethers");
+const { runPython } = require("./python_runner.js");
 
 // Backend keeper to listen to deposit and withdraw events
 // Other changes (different ratio, other recipient wallets) are not needed
@@ -16,9 +17,8 @@ const REBALANCE_DEBOUNCE_MS = Number(
   process.env.REBALANCE_DEBOUNCE_MS || 30000
 );
 
-// --- Drift monitor config ---
-const DRIFT_POLL_MS = 10_000; // every 10s
-let lastDriftUsd = 0;
+// ===== Config =====
+const MONITOR_INTERVAL_MS = Number(process.env.MONITOR_INTERVAL_MS || 60_000);
 
 // Check info from .env file
 if (!VAULT_ADDRESS) {
@@ -160,31 +160,79 @@ async function fetchDriftSnapshot() {
   return await mod.getDriftSnapshot();
 }
 
-async function pollDrift() {
-  try {
-    const s = await fetchDriftSnapshot();
-
-    console.log(
-      [
-        "=== Drift Vault Snapshot ===",
-        `Program ID : ${s.programId}`,
-        `Vault      : ${s.vaultAddress}`,
-        `Depositor  : ${s.depositorAddress}`,
-        "",
-        `vaultEquity (USDC, base units): ${s.vaultEquityUSDCBase.toString()}`,
-        `Your shares / Total shares   : ${s.yourShares.toString()} / ${s.totalShares.toString()}`,
-        `Net Deposits                 : ${s.fmt.netDeposits}`,
-        `Balance (USD)                : ${s.fmt.balance}`,
-        `Earnings (USD)               : ${s.fmt.earnings}`,
-        `ROI                          : ${s.roiPct.toFixed(2)}%`,
-      ].join("\n")
-    );
-
-    // Nudge your rebalance scheduler (debounced)
-    scheduleRebalanceCheck("driftUpdate");
-  } catch (e) {
-    console.error("Drift poll error:", e.message);
+// Call Pyhton script for orders on Hyperliquid
+// Prevent overlapping calls (simple mutex)
+let pyBusy = false;
+async function runHL(action, kvArgs) {
+  if (pyBusy) {
+    console.log("🔒 HL call skipped: previous call still running");
+    return;
   }
+  pyBusy = true;
+  try {
+    const res = await runPython(action, kvArgs);
+    console.log("✅ HL result:", res);
+    return res;
+  } catch (e) {
+    console.error("❌ HL error:", e.message);
+  } finally {
+    pyBusy = false;
+  }
+}
+
+// ===== Utils =====
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let seqMonitorRunning = false;
+let stopSequentialMonitor = false;
+
+// Optioneel: een plek om laatste snapshots bij te houden
+const last = { hl: null, drift: null };
+
+// ===== De sequentiële monitor =====
+async function monitorHLThenDriftOnce() {
+  // 1) HL eerst
+  try {
+    const hl = await runHL("summary"); // gebruikt jouw python runner
+    last.hl = hl;
+    console.log("[HL] positions:", hl?.openPositions?.length ?? 0);
+    // -> hier kun je targets/tolerances checken en eventueel runHL("open"/"close") plannen
+  } catch (e) {
+    console.error("[HL] monitor error:", e.message);
+  }
+
+  // 2) Drift daarna
+  try {
+    const drift = await fetchDriftSnapshot(); // jouw bestaande functie
+    last.drift = drift;
+    console.log(
+      `[Drift] equity: ${drift?.fmt?.balance ?? "?"} USD, ROI: ${
+        drift?.roiPct?.toFixed?.(2) ?? "?"
+      }%`
+    );
+    // -> hier kun je scheduleRebalanceCheck("driftUpdate") of markDirty("drift") doen
+  } catch (e) {
+    console.error("[Drift] monitor error:", e.message);
+  }
+}
+
+async function startSequentialMonitor() {
+  if (seqMonitorRunning) return;
+  seqMonitorRunning = true;
+  console.log(
+    `Starting sequential monitor (HL → Drift) every ${MONITOR_INTERVAL_MS}ms`
+  );
+
+  while (!stopSequentialMonitor) {
+    const t0 = Date.now();
+    await monitorHLThenDriftOnce(); // altijd HL eerst, dan Drift
+    const elapsed = Date.now() - t0;
+    const wait = Math.max(0, MONITOR_INTERVAL_MS - elapsed);
+    await sleep(wait);
+  }
+
+  seqMonitorRunning = false;
+  console.log("Sequential monitor stopped.");
 }
 
 async function main() {
@@ -208,10 +256,11 @@ async function main() {
 
   // Listen to withdraw event
   // PM
-  // Start Drift polling
-  setInterval(pollDrift, DRIFT_POLL_MS);
 
-  console.log("Listening for Vault deposits + monitoring Drift…");
+  // Start de sequentiële monitor
+  startSequentialMonitor();
+
+  console.log("Listening for Vault deposits + sequential monitoring HL→Drift…");
 }
 
 main().catch((err) => {
