@@ -1,0 +1,19 @@
+{
+  "name": "swap",
+  "version": "1.0.0",
+  "description": "",
+  "main": "swap_wbtc_to_usdc.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@uniswap/sdk-core": "^7.7.2",
+    "@uniswap/smart-order-router": "^4.22.20",
+    "dotenv": "^17.2.2",
+    "ethers": "^5.8.0",
+    "jsbi": "^3.2.5"
+  }
+}
