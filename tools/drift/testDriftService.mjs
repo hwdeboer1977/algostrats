@@ -41,7 +41,7 @@ async function main() {
   //await requestDriftWithdraw(ctx, BigInt(5));
 
   // Step 2: Finalize after cooldown (24 hours!)
-  // await finalizeDriftWithdraw(ctx);
+  await finalizeDriftWithdraw(ctx);
 }
 
 main().catch(console.error);
