@@ -31,7 +31,7 @@ async function main() {
   console.log("=== Testing Drift Service ===");
 
   // Monitor (safe)
-  //await monitorAndMaybeAdjustDrift(ctx);
+  await monitorAndMaybeAdjustDrift(ctx);
 
   // Deposit (CAUTION: real tx)
   // await allocateToDrift(ctx, BigInt(1));
@@ -41,7 +41,7 @@ async function main() {
   //await requestDriftWithdraw(ctx, BigInt(5));
 
   // Step 2: Finalize after cooldown (24 hours!)
-  await finalizeDriftWithdraw(ctx);
+  //await finalizeDriftWithdraw(ctx);
 }
 
 main().catch(console.error);

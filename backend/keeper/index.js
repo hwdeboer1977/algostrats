@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { ethers } = require("ethers");
 const { runPython } = require("./python_runner.js");
+const { pathToFileURL } = require("url");
 
 // Backend keeper to listen to deposit and withdraw events
 // Other changes (different ratio, other recipient wallets) are not needed
@@ -12,7 +13,7 @@ const { runPython } = require("./python_runner.js");
 const RPC_URL = process.env.RPC_URL || "ws://127.0.0.1:8545";
 const CONFIRMATIONS = Number(process.env.CONFIRMATIONS || 1);
 const VAULT_ADDRESS = process.env.VAULT_ADDRESS;
-const KEEPER_PRIVATE_KEY = process.env.OWNER_HARDHAT_PRIVATE_KEY;
+const KEEPER_PRIVATE_KEY = process.env.KEEPER_HARDHAT_PRIVATE_KEY;
 const REBALANCE_DEBOUNCE_MS = Number(
   process.env.REBALANCE_DEBOUNCE_MS || 30000
 );
@@ -115,9 +116,72 @@ async function checkAndMaybeRebalance() {
   // Pick how much to move — here we send the full buffer
   const amount = balance;
 
+  function hasFn(iface, sig) {
+    try {
+      iface.getFunction(sig);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const KEEPER = ethers.id("KEEPER_ROLE"); // keccak256("KEEPER_ROLE")
+
+  async function dumpVaultDiag(vault, wallet) {
+    console.log("=== Vault diag ===");
+    try {
+      console.log("asset():", await vault.asset());
+    } catch {}
+    try {
+      console.log("owner():", await vault.owner());
+    } catch {}
+
+    // AccessControl?
+    if (hasFn(vault.interface, "hasRole(bytes32,address)")) {
+      const me = await wallet.getAddress();
+      try {
+        const hasKeeper = await vault.hasRole(KEEPER, me);
+        console.log(`hasRole(KEEPER_ROLE, ${me}) =`, hasKeeper);
+      } catch {}
+    }
+
+    // Pausable?
+    if (hasFn(vault.interface, "paused()")) {
+      try {
+        console.log("paused():", await vault.paused());
+      } catch {}
+    }
+
+    // Common config getters (optional; they may not exist in your vault)
+    for (const fn of [
+      "getRecipients()",
+      "getRecipientsAndWeights()",
+      "targets()",
+      "router()",
+      "hlRouter()",
+      "driftVault()",
+      "splitBps()",
+      "rebalanceMin()",
+    ]) {
+      if (hasFn(vault.interface, fn)) {
+        try {
+          console.log(`${fn} =>`, await vault[fn.slice(0, fn.indexOf("("))]());
+        } catch {}
+      }
+    }
+
+    console.log(
+      "rebalance overloads:",
+      hasFn(vault.interface, "rebalance()") ? "rebalance()" : "-",
+      hasFn(vault.interface, "rebalance(uint256)") ? "rebalance(uint256)" : "-"
+    );
+    console.log("==================");
+  }
+
   // 4) Preflight: static call to ensure it won't revert
   try {
     if (vaultWithSigner.rebalance?.staticCall) {
+      await dumpVaultDiag(vault, wallet);
+
       await vaultWithSigner.rebalance.staticCall(amount);
     } else {
       // ethers v5-ish fallback
@@ -149,15 +213,20 @@ async function checkAndMaybeRebalance() {
 // Use script drift/read_position_info.mjs to get info on current vault position
 // Simple polling loop
 async function fetchDriftSnapshot() {
-  const mod = await import(
-    "file:///C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/drift/read_position_info.mjs"
+  // Resolve relative to this file, not the current working dir
+  const mjsPath = path.resolve(
+    __dirname,
+    "../../tools/drift/read_position_info.mjs"
   );
+  const fileUrl = pathToFileURL(mjsPath).href;
+
+  const mod = await import(fileUrl);
   if (typeof mod.getDriftSnapshot !== "function") {
     throw new Error(
       "getDriftSnapshot() not exported from read_position_info.mjs"
     );
   }
-  return await mod.getDriftSnapshot();
+  return mod.getDriftSnapshot();
 }
 
 // Call Pyhton script for orders on Hyperliquid
@@ -258,7 +327,7 @@ async function main() {
   // PM
 
   // Start de sequentiële monitor
-  startSequentialMonitor();
+  //startSequentialMonitor();
 
   console.log("Listening for Vault deposits + sequential monitoring HL→Drift…");
 }
