@@ -29,7 +29,9 @@ const USDC_ADDR = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"; // 6 decimals
 const RPC_URL =
   process.env.ARBITRUM_ALCHEMY_MAINNET || "https://arb1.arbitrum.io/rpc";
 const PRIVATE_KEY = process.env.WALLET_SECRET;
-const AMOUNT_WBTC = process.env.AMOUNT_WBTC || "0.00001";
+
+// Get amount as input from the frontend
+const AMOUNT_WBTC = process.argv[2] || "0.00001";
 const SLIPPAGE_BPS = Number(process.env.SLIPPAGE_BPS || 75);
 const DEADLINE_SECS = Number(process.env.DEADLINE_SECS || 1200);
 
