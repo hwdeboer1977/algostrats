@@ -33,17 +33,8 @@ export default function SwapUniswap({ apiBase = "http://localhost:4000" }) {
   }
 
   return (
-    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-      <h3 style={{ marginTop: 0 }}>Swap WBTC → USDC (server)</h3>
-
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          alignItems: "center",
-          marginBottom: 8,
-        }}
-      >
+    <>
+      <div className="field">
         <label htmlFor="amountIn">Amount:</label>
         <input
           id="amountIn"
@@ -53,23 +44,22 @@ export default function SwapUniswap({ apiBase = "http://localhost:4000" }) {
           value={amountIn}
           onChange={(e) => setAmountIn(e.target.value)}
           placeholder="Enter amount to swap"
-          style={{ width: 140 }}
         />
-        <button onClick={handleSwap} disabled={loading}>
+      </div>
+
+      <div className="btn-row">
+        <button className="btn" onClick={handleSwap} disabled={loading}>
           {loading ? "Running…" : "Swap"}
         </button>
       </div>
 
       {msg && (
         <p
-          style={{
-            color: msg.type === "ok" ? "green" : "crimson",
-            marginTop: 8,
-          }}
+          className={`status ${msg.type === "ok" ? "status-ok" : "status-err"}`}
         >
           {msg.text} {msg.tx && <span>TX: {msg.tx}</span>}
         </p>
       )}
-    </div>
+    </>
   );
 }

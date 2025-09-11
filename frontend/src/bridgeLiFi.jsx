@@ -1,6 +1,9 @@
-import React, { useState } from "react";
+import React, { useState, Fragment } from "react";
 
-export default function BridgeLiFi({ apiBase = "http://localhost:4000" }) {
+export default function BridgeLiFi({
+  apiBase = "http://localhost:4000",
+  bare = true,
+}) {
   const [amountIn, setAmountIn] = useState("5");
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState(null); // { type: "ok"|"err", text, tx? }
@@ -21,7 +24,6 @@ export default function BridgeLiFi({ apiBase = "http://localhost:4000" }) {
       const data = JSON.parse(txt);
       if (!data.ok) throw new Error(data.error || "Script failed");
 
-      // Try to extract a tx hash if your script prints one
       const m = (data.output || "").match(/0x[a-fA-F0-9]{64}/);
       setMsg({ type: "ok", text: "Bridge submitted.", tx: m?.[0] });
     } catch (e) {
@@ -32,18 +34,9 @@ export default function BridgeLiFi({ apiBase = "http://localhost:4000" }) {
     }
   }
 
-  return (
-    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-      <h3 style={{ marginTop: 0 }}>Bridge (LiFi, server)</h3>
-
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          alignItems: "center",
-          marginBottom: 8,
-        }}
-      >
+  const body = (
+    <Fragment>
+      <div className="field">
         <label htmlFor="bridgeAmount">Amount:</label>
         <input
           id="bridgeAmount"
@@ -53,23 +46,24 @@ export default function BridgeLiFi({ apiBase = "http://localhost:4000" }) {
           value={amountIn}
           onChange={(e) => setAmountIn(e.target.value)}
           placeholder="Enter amount to bridge"
-          style={{ width: 160 }}
         />
-        <button onClick={handleBridge} disabled={loading}>
+      </div>
+      <div className="btn-row">
+        <button className="btn" onClick={handleBridge} disabled={loading}>
           {loading ? "Running…" : "Bridge"}
         </button>
       </div>
 
       {msg && (
         <p
-          style={{
-            color: msg.type === "ok" ? "green" : "crimson",
-            marginTop: 8,
-          }}
+          className={`status ${msg.type === "ok" ? "status-ok" : "status-err"}`}
         >
           {msg.text} {msg.tx && <span>TX: {msg.tx}</span>}
         </p>
       )}
-    </div>
+    </Fragment>
   );
+
+  // bare=true (default): render without any wrapper styles (for embedding in a .card)
+  return bare ? body : <section className="card">{body}</section>;
 }

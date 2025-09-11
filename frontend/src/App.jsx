@@ -1,49 +1,35 @@
+// src/App.jsx
 import ConnectButton from "./ConnectButton";
 import VaultInteractions from "./VaultInteractions";
-import Card from "./Card";
-import "./App.css";
+import "./AdminLayout.css"; // reuse the shared styles
 import { Link } from "react-router-dom";
 
 const ENABLE_ADMIN = import.meta.env.VITE_ENABLE_ADMIN === "true";
 
 export default function App() {
   return (
-    <div className="shell">
-      <header
-        className="shell__top"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <h1>Algostrats</h1>
+    <div className="admin-wrap">
+      {/* Header */}
+      <header className="page-header">
+        <h1 className="brand">Algostrats</h1>
         {ENABLE_ADMIN && (
-          <Link
-            to="/admin"
-            style={{
-              fontSize: 26,
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid #ddd",
-              textDecoration: "none",
-              opacity: 0.8,
-            }}
-            title="Owner utilities"
-          >
+          <Link to="/admin" className="admin-pill" title="Owner utilities">
             Admin
           </Link>
         )}
       </header>
 
-      <main className="grid">
-        <Card title="Wallet">
+      {/* 2 cards side-by-side */}
+      <main className="content-grid">
+        <section className="card">
+          <div className="section-title">Wallet</div>
           <ConnectButton />
-        </Card>
+        </section>
 
-        <Card title="Vault">
+        <section className="card">
+          <div className="section-title">Vault</div>
           <VaultInteractions />
-        </Card>
+        </section>
       </main>
     </div>
   );

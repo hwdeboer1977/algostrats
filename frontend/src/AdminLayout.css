@@ -1,0 +1,371 @@
+/* AdminLayout.css */
+:root {
+  --bg: #f8fafc;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --ring: #93c5fd;
+  --shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+  --radius: 16px;
+  --gap: 18px;
+}
+
+/* Header (reuse from earlier suggestion) */
+.page-header {
+  max-width: 1200px;
+  margin: 0 auto 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.brand {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+}
+.admin-pill {
+  font-size: 14px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #efe7fb;
+  color: #5b21b6;
+  text-decoration: none;
+  border: 1px solid var(--border);
+}
+
+/* Main grid for home */
+.content-grid {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: 1fr 1fr;
+}
+@media (max-width: 900px) {
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Wallet box */
+.wallet-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 12px;
+  box-shadow: var(--shadow);
+}
+.wallet-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.wallet-row .label {
+  color: var(--muted);
+}
+
+/* Buttons (variants) */
+.btn {
+  border: 1px solid var(--border);
+  background: #f1f5f9;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:hover {
+  background: #e2e8f0;
+}
+.btn:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: #0ea5e9;
+  color: #fff;
+  border-color: #7dd3fc;
+}
+.btn-primary:hover {
+  background: #0284c7;
+}
+
+.btn-secondary {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+.btn-secondary:hover {
+  background: #cbd5e1;
+}
+
+.btn-danger {
+  background: #ef4444;
+  color: #fff;
+  border-color: #fecaca;
+}
+.btn-danger:hover {
+  background: #dc2626;
+}
+
+/* Modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.modal-card {
+  width: 100%;
+  max-width: 420px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+.modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.modal-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.details {
+  margin-top: 8px;
+}
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.btn-link:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.status {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.status-ok {
+  color: #16a34a;
+}
+.status-err {
+  color: #dc2626;
+}
+
+.admin-wrap {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  padding: 32px 18px;
+}
+
+.admin-grid {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 320px 1fr; /* sidebar | main */
+  gap: 28px;
+}
+
+@media (max-width: 1000px) {
+  .admin-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.sidebar {
+  position: sticky;
+  top: 18px;
+  align-self: start;
+}
+
+.section-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: #f1f5f9;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:hover {
+  background: #e2e8f0;
+}
+.btn:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.output {
+  margin-top: 12px;
+  padding: 10px;
+  background: #0b1020;
+  color: #dbeafe;
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid #1e293b;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr; /* two cards side by side on wide screens */
+  gap: 18px;
+}
+@media (max-width: 900px) {
+  .row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+input[type="text"],
+input[type="number"] {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.btn-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* segmented Buy/Sell control */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.seg-btn {
+  padding: 8px 12px;
+  font-weight: 600;
+  background: #fff;
+  border: 0;
+  cursor: pointer;
+}
+.seg-btn + .seg-btn {
+  border-left: 1px solid var(--border);
+}
+.seg-btn.active.buy {
+  background: #16a34a;
+  color: #fff;
+}
+.seg-btn.active.sell {
+  background: #dc2626;
+  color: #fff;
+}
+.badge.buy {
+  color: #16a34a;
+  font-weight: 700;
+}
+.badge.sell {
+  color: #dc2626;
+  font-weight: 700;
+}
+
+/* radios row */
+.radio-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* result box */
+.details {
+  margin-top: 12px;
+}
+.notice {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+.notice-ok {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.notice-err {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.mono {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* link-style button for "Hide now" */
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.btn-link:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}

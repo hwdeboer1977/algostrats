@@ -87,71 +87,60 @@ export default function DriftControls({ apiBase = "http://localhost:4000" }) {
   }
 
   return (
-    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-      <h3 style={{ marginTop: 0 }}>Drift (server)</h3>
-
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          flexWrap: "wrap",
-          alignItems: "center",
-          marginBottom: 8,
-        }}
-      >
+    <>
+      {/* Deposit */}
+      <div className="field">
         <label>Deposit amount:</label>
         <input
           value={depAmt}
           onChange={(e) => setDepAmt(e.target.value)}
-          style={{ width: 120 }}
           placeholder="1"
         />
-        <button onClick={deposit} disabled={loadingDep}>
+      </div>
+      <div className="btn-row">
+        <button className="btn" onClick={deposit} disabled={loadingDep}>
           {loadingDep ? "Running…" : "Deposit"}
         </button>
+      </div>
 
+      {/* Request withdraw */}
+      <div className="field">
         <label>Withdraw amount:</label>
         <input
           value={wdAmt}
           onChange={(e) => setWdAmt(e.target.value)}
-          style={{ width: 120 }}
           placeholder="5"
         />
-        <button onClick={requestWithdraw} disabled={loadingReq}>
+      </div>
+      <div className="btn-row">
+        <button className="btn" onClick={requestWithdraw} disabled={loadingReq}>
           {loadingReq ? "Running…" : "Request Withdraw"}
         </button>
-
-        <button onClick={finalizeWithdraw} disabled={loadingFin}>
+        <button
+          className="btn"
+          onClick={finalizeWithdraw}
+          disabled={loadingFin}
+        >
           {loadingFin ? "Running…" : "Finalize Withdraw"}
         </button>
       </div>
 
+      {/* Status message */}
       {msg && (
         <p
-          style={{
-            color: msg.type === "ok" ? "green" : "crimson",
-            marginTop: 8,
-          }}
+          className={`status ${msg.type === "ok" ? "status-ok" : "status-err"}`}
         >
           {msg.text}
         </p>
       )}
 
+      {/* Output (expandable) */}
       {output && (
-        <details open style={{ marginTop: 12 }}>
+        <details open className="details" style={{ marginTop: 8 }}>
           <summary>Drift output</summary>
-          <pre
-            style={{
-              background: "#f7f7f7",
-              padding: 12,
-              borderRadius: 8,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {output}
-          </pre>
+          <pre className="output">{output}</pre>
         </details>
       )}
-    </div>
+    </>
   );
 }

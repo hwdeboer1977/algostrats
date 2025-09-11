@@ -25,7 +25,7 @@ const DEPOSITOR_ADDRESS = new PublicKey(
 );
 
 // Path to your existing CLI script (adjust if needed)
-const CLI_PATH = path.resolve(__dirname, "./vault.mjs"); // same folder; change if elsewhere
+const CLI_PATH = path.resolve(__dirname, "./vaultNew.mjs"); // same folder; change if elsewhere
 // --------------------------
 
 const toBigInt = (x) =>

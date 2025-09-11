@@ -77,114 +77,97 @@ export default function HLOpenOrder() {
       setLoadingClose(false);
     }
   }
-
   return (
-    <div className="w-full max-w-xl rounded-2xl border p-6 shadow-sm">
-      <h2 className="text-xl font-semibold mb-4">Hyperliquid — Open / Close</h2>
-
+    <>
       {/* Coin */}
-      <label className="block mb-3">
-        <span className="text-sm text-gray-600">Coin</span>
+      <div className="field">
+        <label htmlFor="coin">Coin</label>
         <input
-          className="mt-1 w-full rounded-lg border px-3 py-2"
+          id="coin"
           placeholder="ETH"
           value={coin}
           onChange={(e) => setCoin(e.target.value.toUpperCase())}
         />
-      </label>
+      </div>
 
       {/* Side */}
-      <div className="mb-3">
-        <span className="block text-sm text-gray-600 mb-1">Side</span>
-        <div className="inline-flex rounded-lg border">
-          <button
-            type="button"
-            aria-pressed={side === "buy"}
-            onClick={() => setSide("buy")}
-            className={[
-              "px-4 py-2 font-medium transition-colors rounded-l-lg",
-              side === "buy"
-                ? "bg-green-600 text-white"
-                : "bg-white text-green-700 hover:bg-green-50",
-            ].join(" ")}
-          >
-            Buy
-          </button>
-          <button
-            type="button"
-            aria-pressed={side === "sell"}
-            onClick={() => setSide("sell")}
-            className={[
-              "px-4 py-2 font-medium transition-colors border-l rounded-r-lg",
-              side === "sell"
-                ? "bg-red-600 text-white"
-                : "bg-white text-red-700 hover:bg-red-50",
-            ].join(" ")}
-          >
-            Sell
-          </button>
-        </div>
-        <div className="mt-2 text-sm">
-          Currently selected:{" "}
-          <span
-            className={
-              side === "buy"
-                ? "text-green-600 font-semibold"
-                : "text-red-600 font-semibold"
-            }
-          >
-            {side.toUpperCase()}
-          </span>
+      <div className="field">
+        <label>Side</label>
+        <div>
+          <div className="segmented">
+            <button
+              type="button"
+              aria-pressed={side === "buy"}
+              onClick={() => setSide("buy")}
+              className={`seg-btn ${side === "buy" ? "active buy" : ""}`}
+            >
+              Buy
+            </button>
+            <button
+              type="button"
+              aria-pressed={side === "sell"}
+              onClick={() => setSide("sell")}
+              className={`seg-btn ${side === "sell" ? "active sell" : ""}`}
+            >
+              Sell
+            </button>
+          </div>
+          <div className="muted" style={{ marginTop: 6 }}>
+            Currently selected:{" "}
+            <span className={`badge ${side === "buy" ? "buy" : "sell"}`}>
+              {side.toUpperCase()}
+            </span>
+          </div>
         </div>
       </div>
 
       {/* Size */}
-      <label className="block mb-3">
-        <span className="text-sm text-gray-600">Size</span>
+      <div className="field">
+        <label htmlFor="size">Size</label>
         <input
+          id="size"
           type="number"
           min="0"
           step="0.0001"
-          className="mt-1 w-full rounded-lg border px-3 py-2"
           placeholder="0.025"
           value={size}
           onChange={(e) => setSize(e.target.value)}
         />
-      </label>
+      </div>
 
       {/* Slippage */}
-      <label className="block mb-3">
-        <span className="text-sm text-gray-600">Slippage</span>
+      <div className="field">
+        <label htmlFor="slippage">Slippage</label>
         <input
+          id="slippage"
           type="number"
           min="0"
           step="0.0001"
-          className="mt-1 w-full rounded-lg border px-3 py-2"
           placeholder="0.01"
           value={slippage}
           onChange={(e) => setSlippage(e.target.value)}
         />
-      </label>
+      </div>
 
       {/* Leverage */}
-      <label className="block mb-3">
-        <span className="text-sm text-gray-600">Leverage</span>
+      <div className="field">
+        <label htmlFor="leverage">Leverage</label>
         <input
+          id="leverage"
           type="number"
           min="1"
           step="1"
-          className="mt-1 w-full rounded-lg border px-3 py-2"
           placeholder="10"
           value={leverage}
           onChange={(e) => setLeverage(e.target.value)}
         />
-      </label>
+      </div>
 
       {/* Margin */}
-      <div className="mb-4">
-        <span className="block text-sm text-gray-600 mb-1">Margin</span>
-        <div className="flex gap-3">
-          <label className="inline-flex items-center gap-2">
+      <div className="field">
+        <label>Margin</label>
+        <div className="radio-row">
+          <label className="radio">
             <input
               type="radio"
               name="margin"
@@ -194,7 +177,7 @@ export default function HLOpenOrder() {
             />
             <span>Cross</span>
           </label>
-          <label className="inline-flex items-center gap-2">
+          <label className="radio">
             <input
               type="radio"
               name="margin"
@@ -207,59 +190,36 @@ export default function HLOpenOrder() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <button
-          onClick={handleOpen}
-          disabled={loadingOpen}
-          className="rounded-xl px-4 py-2 font-medium bg-black text-white hover:bg-gray-800 disabled:opacity-50"
-        >
+      {/* Actions */}
+      <div className="btn-row">
+        <button className="btn" onClick={handleOpen} disabled={loadingOpen}>
           {loadingOpen ? "Opening..." : "Open Position"}
         </button>
-        <button
-          onClick={handleClose}
-          disabled={loadingClose}
-          className="rounded-xl px-4 py-2 font-medium bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50"
-        >
+        <button className="btn" onClick={handleClose} disabled={loadingClose}>
           {loadingClose ? "Closing..." : "Close Position"}
         </button>
       </div>
 
-      {/* Result: auto-hide after 6s, but user can reopen via <details> */}
+      {/* Result (auto-hide after 6s, still toggle-able) */}
       {result && (
         <details
           open={showResult}
           onToggle={(e) => setShowResult(e.currentTarget.open)}
-          className="mt-4"
+          className="details"
         >
-          <summary className="cursor-pointer select-none">
+          <summary className="summary">
             {result.ok ? "Success" : "Error"}
           </summary>
 
-          <div
-            className={[
-              "mt-2 rounded-lg border p-3",
-              result.ok
-                ? "border-green-300 bg-green-50"
-                : "border-red-300 bg-red-50",
-            ].join(" ")}
-          >
-            {result.output && (
-              <pre className="whitespace-pre-wrap text-sm text-gray-800">
-                {result.output}
-              </pre>
-            )}
-            {result.error && (
-              <pre className="whitespace-pre-wrap text-sm text-gray-800">
-                {result.error}
-              </pre>
-            )}
+          <div className={`notice ${result.ok ? "notice-ok" : "notice-err"}`}>
+            {result.output && <pre className="mono">{result.output}</pre>}
+            {result.error && <pre className="mono">{result.error}</pre>}
 
-            {/* Optional: a manual hide button */}
-            <div className="mt-2">
+            <div className="btn-row" style={{ marginTop: 6 }}>
               <button
                 type="button"
+                className="btn-link"
                 onClick={() => setShowResult(false)}
-                className="text-sm underline"
               >
                 Hide now
               </button>
@@ -267,6 +227,6 @@ export default function HLOpenOrder() {
           </div>
         </details>
       )}
-    </div>
+    </>
   );
 }

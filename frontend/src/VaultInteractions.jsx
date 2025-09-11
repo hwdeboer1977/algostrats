@@ -1,3 +1,4 @@
+// src/VaultInteractions.jsx
 import React, { useState } from "react";
 import { ethers } from "ethers";
 import { useWallet } from "./WalletProvider";
@@ -6,107 +7,114 @@ import { useVault } from "./UseVault";
 export default function VaultInteractions() {
   const { connected, chain, address } = useWallet();
   const v = useVault();
-  const [amount, setAmount] = useState(""); // string input in asset units (e.g., "0.001")
 
+  // string input in asset units (e.g., "0.001")
+  const [amount, setAmount] = useState("");
   const [preview, setPreview] = useState(null);
 
-  const onPreview = async () => {
+  async function onPreview() {
     try {
       const shares = await v.previewDeposit(amount);
       setPreview(ethers.formatUnits(shares, v.shareMeta.decimals));
     } catch (e) {
-      setPreview(null);
       console.error(e);
+      setPreview(null);
     }
-  };
+  }
+
+  const assetDecimals = Number(v?.assetMeta?.decimals ?? 6);
+  const placeholder = `0.${"0".repeat(Math.max(0, assetDecimals - 1))}1`;
 
   return (
-    <div className="w-full max-w-lg rounded-2xl border bg-white p-5 shadow-sm">
-      <div className="text-sm space-y-1 mb-4">
-        <div>
-          <span className="font-semibold">Chain:</span>{" "}
-          {chain?.name ?? "Unknown"}
-        </div>
-        <div>
-          <span className="font-semibold">Vault total assets:</span>{" "}
-          {v.formatted.vaultTotalAssets ?? "…"} {v.assetMeta.symbol}
-        </div>
-        {connected && (
-          <>
-            <div>
-              <span className="font-semibold">Your {v.assetMeta.symbol}:</span>{" "}
-              {v.formatted.userAsset ?? "…"}{" "}
-            </div>
-            <div>
-              <span className="font-semibold">Your {v.shareMeta.symbol}:</span>{" "}
-              {v.formatted.userShares ?? "…"}{" "}
-            </div>
-            <div>
-              <span className="font-semibold">Wallet:</span>{" "}
+    <>
+      {/* Info */}
+      <p className="muted">Chain: {chain?.name ?? "Unknown"}</p>
+      <p className="muted">
+        Vault total assets: {v.formatted.vaultTotalAssets ?? "…"}{" "}
+        {v.assetMeta.symbol}
+      </p>
+
+      {connected && (
+        <>
+          <div className="wallet-row">
+            <span className="label">Your {v.assetMeta.symbol}:</span>
+            <span>{v.formatted.userAsset ?? "…"}</span>
+          </div>
+          <div className="wallet-row">
+            <span className="label">Your {v.shareMeta.symbol}:</span>
+            <span>{v.formatted.userShares ?? "…"}</span>
+          </div>
+          <div className="wallet-row">
+            <span className="label">Wallet:</span>
+            <span>
               {address.slice(0, 6)}…{address.slice(-4)}
-            </div>
-            <div>
-              <span className="font-semibold">Share Price:</span>{" "}
+            </span>
+          </div>
+          <div className="wallet-row">
+            <span className="label">Share Price:</span>
+            <span>
               {v.price.assetsPerShare != null
                 ? `${v.price.assetsPerShare} ${v.assetMeta.symbol} per 1 ${v.shareMeta.symbol}`
                 : "…"}
-            </div>
-          </>
-        )}
-      </div>
+            </span>
+          </div>
+        </>
+      )}
 
-      <div className="space-y-2 mb-3">
-        <label className="block text-sm font-medium">
-          Amount ({v.assetMeta.symbol})
-        </label>
+      {/* Amount input */}
+      <div className="field" style={{ marginTop: 10 }}>
+        <label htmlFor="vault-amount">Amount ({v.assetMeta.symbol})</label>
         <input
+          id="vault-amount"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
-          placeholder={`0.${"0".repeat(
-            Math.max(0, v.assetMeta.decimals - 1)
-          )}1`}
-          className="w-full rounded-xl border px-3 py-2 outline-none focus:ring"
+          placeholder={placeholder}
         />
-        <div className="text-xs text-gray-600">
-          Decimals: {v.assetMeta.decimals} • Preview shares:{" "}
-          {preview != null ? `${preview} ${v.shareMeta.symbol}` : "—"}{" "}
-          <button onClick={onPreview} className="underline">
-            refresh
-          </button>
-        </div>
       </div>
 
-      <div className="row">
+      <div className="between" style={{ marginTop: 6 }}>
+        <span className="muted">
+          Decimals: {assetDecimals} • Preview shares:{" "}
+          {preview != null ? `${preview} ${v.shareMeta.symbol}` : "—"}
+        </span>
+        <button className="btn btn-sm" onClick={onPreview}>
+          refresh
+        </button>
+      </div>
+
+      {/* Actions */}
+      <div className="btn-row" style={{ marginTop: 10 }}>
         <button
+          className="btn btn-secondary"
           disabled={!connected || v.loading}
           onClick={() => v.depositAssets(amount)}
-          className="btn btn--primary"
         >
           Deposit
         </button>
 
         <button
+          className="btn btn-secondary"
           disabled={!connected || v.loading}
           onClick={() => v.withdrawAssets(amount)}
-          className="btn btn--secondary"
         >
           Withdraw (assets)
         </button>
 
         <button
+          className="btn btn-secondary"
           disabled={!connected || v.loading}
           onClick={() => v.redeemShares(amount)}
-          className="btn btn--secondary"
         >
           Redeem (shares)
         </button>
       </div>
 
+      {/* Error */}
       {v.error && (
-        <div className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-          {v.error}
+        <div className="notice notice-err" style={{ marginTop: 10 }}>
+          <pre className="mono">{v.error}</pre>
         </div>
       )}
-    </div>
+    </>
   );
 }

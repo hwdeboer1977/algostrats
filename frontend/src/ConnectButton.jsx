@@ -16,9 +16,8 @@ export default function ConnectButton() {
   const [showModal, setShowModal] = useState(false);
 
   const handleClick = async () => {
-    // if no wallet or only one → connect directly
     if (!availableWallets || availableWallets.length <= 1) {
-      await connect();
+      await connect(); // connect to default
     } else {
       setShowModal(true);
     }
@@ -26,65 +25,67 @@ export default function ConnectButton() {
 
   if (connected) {
     return (
-      <div className="p-4 border rounded-xl bg-white shadow-sm">
-        <div className="space-y-2 text-sm">
-          <div>
-            <span className="font-semibold">Chain:</span>{" "}
-            {chain?.name ?? "Unknown"}
-          </div>
-          <div>
-            <span className="font-semibold">Native Balance:</span>{" "}
+      <div className="wallet-box">
+        <div className="wallet-row">
+          <span className="label">Chain:</span>
+          <span>{chain?.name ?? "Unknown"}</span>
+        </div>
+        <div className="wallet-row">
+          <span className="label">Native Balance:</span>
+          <span>
             {nativeBalance != null
               ? `${Number(ethers.formatEther(nativeBalance)).toFixed(4)} ${
                   chain?.native ?? "ETH"
                 }`
               : "…"}
-          </div>
-          <div>
-            <span className="font-semibold">Wallet Address:</span>{" "}
-            {address.slice(0, 6)}…{address.slice(-4)}
-          </div>
+          </span>
         </div>
-        <button onClick={disconnect} className="btn btn--danger mt-4">
-          Disconnect
-        </button>
+        <div className="wallet-row">
+          <span className="label">Wallet Address:</span>
+          <span>
+            {address.slice(0, 6)}…{address.slice(-4)}
+          </span>
+        </div>
+
+        <div className="btn-row" style={{ marginTop: 8 }}>
+          <button className="btn btn-danger" onClick={disconnect}>
+            Disconnect
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
     <>
-      <button onClick={handleClick} className="btn btn--primary">
+      <button className="btn btn-secondary" onClick={handleClick}>
         Connect Wallet
       </button>
 
-      {/* Popup Modal */}
+      {/* Modal */}
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
-            <h2 className="mb-4 text-lg font-semibold">Choose a wallet</h2>
-            <div className="flex flex-col gap-2">
-              {availableWallets.map((entry) => (
+        <div className="modal-backdrop" onClick={() => setShowModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="section-title" style={{ marginBottom: 8 }}>
+              Choose a wallet
+            </div>
+            <div className="modal-list">
+              {(availableWallets || []).map((entry) => (
                 <button
                   key={entry.info.uuid}
+                  className="btn btn-secondary modal-item"
                   onClick={async () => {
                     await connect(entry);
                     setShowModal(false);
                   }}
-                  className="btn btn--secondary flex items-center justify-between"
                 >
                   <span>{entry.info.name}</span>
-                  <span className="text-xs text-gray-500">
-                    {entry.info.rdns}
-                  </span>
+                  <span className="muted">{entry.info.rdns}</span>
                 </button>
               ))}
             </div>
-            <div className="mt-4 flex justify-end">
-              <button
-                onClick={() => setShowModal(false)}
-                className="btn btn--secondary"
-              >
+            <div className="btn-row" style={{ marginTop: 10 }}>
+              <button className="btn" onClick={() => setShowModal(false)}>
                 Cancel
               </button>
             </div>

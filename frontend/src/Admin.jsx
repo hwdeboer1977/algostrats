@@ -1,42 +1,55 @@
 // src/pages/Admin.jsx
 import React, { useState, useRef, useEffect } from "react";
-import Card from "./Card";
-import ConnectButton from "./ConnectButton";
+// (Optional) remove if unused
+// import Card from "./Card";
+// import ConnectButton from "./ConnectButton";
 import HLOpenOrder from "./HLOpenOrder";
 import SwapUniswap from "./swapUniswap";
 import BridgeLiFi from "./bridgeLiFi";
 import DriftControls from "./driftControls";
+import "./AdminLayout.css";
 
 export default function Admin() {
-  // separate loaders
+  // loaders
   const [loadingHL, setLoadingHL] = useState(false);
   const [loadingDriftPos, setLoadingDriftPos] = useState(false);
 
-  // Render output HL, Drift
+  // outputs
   const [hlOutput, setHlOutput] = useState("");
   const [driftOutput, setDriftOutput] = useState("");
 
-  // optional: separate messages
+  // messages
   const [msgHL, setMsgHL] = useState(null);
   const [msgDrift, setMsgDrift] = useState(null);
 
-  // API from backend server
+  // output visibility (collapsible)
+  const [showHLOut, setShowHLOut] = useState(false);
+  const [showDriftOut, setShowDriftOut] = useState(false);
+
   const API = import.meta.env.VITE_ADMIN_API_URL || "http://localhost:4000";
   const timers = useRef([]);
 
-  // Function to clear message after 6 seconds
+  // util: auto-clear a message after 6s
   const autoClear = (setter, val) => {
     setter(val);
     const t = setTimeout(() => setter(null), 6000);
     timers.current.push(t);
   };
+
+  // util: auto-hide an output after 6s
+  const autoHide = (setter) => {
+    const t = setTimeout(() => setter(false), 6000);
+    timers.current.push(t);
+  };
+
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
-  // Function to read all position info from Hyperliquid
+  // === Hyperliquid positions ===
+  // --- Hyperliquid ---
   async function getPositionHL() {
     if (loadingHL) return;
     setLoadingHL(true);
-    autoClear(setMsgHL, null);
+    setMsgHL(null);
     try {
       const res = await fetch(`${API}/api/hl-command`, {
         method: "POST",
@@ -48,17 +61,14 @@ export default function Admin() {
       const data = JSON.parse(txt);
       if (!data.ok) throw new Error(data.error || "Script failed");
 
-      // try to pretty-print JSON output; else just keep raw
       let pretty = data.output || "";
       try {
-        const obj = JSON.parse(pretty);
-        pretty = JSON.stringify(obj, null, 2);
-      } catch {
-        /* not JSON, ignore */
-      }
+        pretty = JSON.stringify(JSON.parse(pretty), null, 2);
+      } catch {}
       setHlOutput(pretty);
-
-      autoClear(setMsgHL, { type: "ok", text: "Positions fetched." });
+      setShowHLOut(true); // 👈 open panel
+      setTimeout(() => setShowHLOut(false), 6000); // optional auto-close
+      autoClear(setMsgHL, { type: "ok", text: "HL positions fetched." });
     } catch (e) {
       autoClear(setMsgHL, { type: "err", text: e.message || String(e) });
     } finally {
@@ -66,11 +76,11 @@ export default function Admin() {
     }
   }
 
-  // --- DRIFT POS ---
+  // --- Drift ---
   async function getPositionDrift() {
     if (loadingDriftPos) return;
     setLoadingDriftPos(true);
-    autoClear(setMsgDrift, null);
+    setMsgDrift(null);
     try {
       const res = await fetch(`${API}/api/drift/get-pos-drift`, {
         method: "POST",
@@ -81,11 +91,14 @@ export default function Admin() {
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${txt || "<empty>"}`);
       const data = JSON.parse(txt);
       if (!data.ok) throw new Error(data.error || "Script failed");
-      let pretty = data.output || "";
+
+      let pretty = (data.output || "").trim();
       try {
         pretty = JSON.stringify(JSON.parse(pretty), null, 2);
       } catch {}
       setDriftOutput(pretty);
+      setShowDriftOut(true); // 👈 open panel
+      setTimeout(() => setShowDriftOut(false), 6000); // optional auto-close
       autoClear(setMsgDrift, { type: "ok", text: "Drift positions fetched." });
     } catch (e) {
       autoClear(setMsgDrift, { type: "err", text: e.message || String(e) });
@@ -95,71 +108,130 @@ export default function Admin() {
   }
 
   return (
-    <div style={{ maxWidth: 900, margin: "40px auto", padding: 24 }}>
-      <h1>Algostrats — Admin</h1>
+    <div className="admin-wrap">
+      <div className="admin-grid">
+        {/* LEFT SIDEBAR */}
+        <aside className="card sidebar">
+          <div className="section-title">Algostrats — Admin</div>
+          <p className="muted">Quick server reads</p>
 
-      {/* Get current position on Drift protocol */}
-      <button onClick={getPositionDrift} disabled={loadingDriftPos}>
-        {loadingDriftPos ? "Running…" : "Get Drift Positions (server)"}
-      </button>
-      {msgDrift && (
-        <p style={{ color: msgDrift.type === "ok" ? "green" : "crimson" }}>
-          {msgDrift.text}
-        </p>
-      )}
-      {driftOutput && (
-        <details open style={{ marginTop: 12 }}>
-          <summary>Drift output</summary>
-          <pre
-            style={{
-              background: "#f7f7f7",
-              padding: 12,
-              borderRadius: 8,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {driftOutput}
-          </pre>
-        </details>
-      )}
+          <div className="actions">
+            {/* Drift positions */}
+            <button
+              className="btn"
+              onClick={getPositionDrift}
+              disabled={loadingDriftPos}
+            >
+              {loadingDriftPos ? "Running…" : "Get Drift Positions (server)"}
+            </button>
+            {msgDrift && (
+              <p
+                className="muted"
+                style={{ color: msgDrift.type === "ok" ? "green" : "crimson" }}
+              >
+                {msgDrift.text}
+              </p>
+            )}
+            {(showDriftOut || driftOutput !== "") && (
+              <details
+                open={showDriftOut}
+                onToggle={(e) => setShowDriftOut(e.currentTarget.open)}
+                className="details"
+              >
+                <summary>Drift output</summary>
+                <pre className="output">
+                  {driftOutput ||
+                    "No output captured (stdout was empty). Check server logs."}
+                </pre>
+                <div className="btn-row" style={{ marginTop: 6 }}>
+                  <button
+                    className="btn-link"
+                    onClick={() => setShowDriftOut(false)}
+                  >
+                    Hide now
+                  </button>
+                  <button
+                    className="btn-link"
+                    onClick={() => setDriftOutput("")}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </details>
+            )}
 
-      {/* Get current position on HL protocol */}
-      <button onClick={getPositionHL} disabled={loadingHL}>
-        {loadingHL ? "Running…" : "Get HL Positions (server)"}
-      </button>
-      {msgHL && (
-        <p style={{ color: msgHL.type === "ok" ? "green" : "crimson" }}>
-          {msgHL.text}
-        </p>
-      )}
-      {hlOutput && (
-        <details open style={{ marginTop: 12 }}>
-          <summary>Hyperliquid positions output</summary>
-          <pre
-            style={{
-              background: "#f7f7f7",
-              padding: 12,
-              borderRadius: 8,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {hlOutput}
-          </pre>
-        </details>
-      )}
+            {/* Hyperliquid positions */}
+            <button
+              className="btn"
+              onClick={getPositionHL}
+              disabled={loadingHL}
+            >
+              {loadingHL ? "Running…" : "Get HL Positions (server)"}
+            </button>
+            {msgHL && (
+              <p
+                className="muted"
+                style={{ color: msgHL.type === "ok" ? "green" : "crimson" }}
+              >
+                {msgHL.text}
+              </p>
+            )}
+            {(showHLOut || hlOutput !== "") && (
+              <details
+                open={showHLOut}
+                onToggle={(e) => setShowHLOut(e.currentTarget.open)}
+                className="details"
+              >
+                <summary>Hyperliquid output</summary>
+                <pre className="output">
+                  {hlOutput || "No output captured (stdout was empty)."}
+                </pre>
+                <div className="btn-row" style={{ marginTop: 6 }}>
+                  <button
+                    className="btn-link"
+                    onClick={() => setShowHLOut(false)}
+                  >
+                    Hide now
+                  </button>
+                  <button className="btn-link" onClick={() => setHlOutput("")}>
+                    Clear
+                  </button>
+                </div>
+              </details>
+            )}
+          </div>
+        </aside>
 
-      <div style={{ display: "grid", gap: 12 }}>
-        {/*Open script to Swap on Uniswap*/}
-        <SwapUniswap apiBase={API} />
+        {/* RIGHT MAIN CONTENT */}
+        <main>
+          <div className="main-grid">
+            {/* Row 1: Swap & Bridge */}
+            <div className="row">
+              <section className="card">
+                <div className="section-title">Swap WBTC → USDC (server)</div>
+                <SwapUniswap apiBase={API} />
+              </section>
 
-        {/*Open script to Bridge to Solana*/}
-        <BridgeLiFi apiBase={API} />
+              <section className="card">
+                <div className="section-title">Bridge (Li.Fi, server)</div>
+                <BridgeLiFi apiBase={API} />
+              </section>
+            </div>
 
-        {/*Open script for orders Hyperliquid*/}
-        <HLOpenOrder apiBase={API} />
+            {/* Row 2: Hyperliquid & Drift */}
+            <div className="row">
+              <section className="card">
+                <div className="section-title">Hyperliquid — Open / Close</div>
+                <HLOpenOrder apiBase={API} />
+              </section>
 
-        {/*Open script for orders Drift protocol*/}
-        <DriftControls apiBase={API} />
+              <section className="card">
+                <div className="section-title">Drift (server)</div>
+                <DriftControls apiBase={API} />
+              </section>
+            </div>
+          </div>
+        </main>
       </div>
     </div>
   );
