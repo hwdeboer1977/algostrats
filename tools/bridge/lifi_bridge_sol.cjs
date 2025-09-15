@@ -28,7 +28,7 @@ const arbitrum = defineChain({
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: [process.env.ARBITRUM_ALCHEMY_MAINNET] } },
 });
-const evmAccount = privateKeyToAccount(process.env.WALLET_SECRET);
+const evmAccount = privateKeyToAccount(process.env.PK_RECIPIENT_A);
 let evmClient = createWalletClient({
   account: evmAccount,
   chain: arbitrum,

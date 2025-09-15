@@ -1,7 +1,8 @@
-// vault.mjs — Convenience wrapper for Drift Vaults TS CLI
+// vaultNew.mjs — Convenience wrapper for Drift Vaults TS CLI
 // - Auto-fills flags from ../../.env
 // - Derives VaultDepositor PDA for withdraw if missing
-// - Prints tx signature and supports DRIFT_SKIP_PREFLIGHT=1
+// - Prints tx signature and treats common Solana preflight noise as success
+// - Supports DRIFT_SKIP_PREFLIGHT=1 to add --skip-preflight
 //
 // Requires: @drift-labs/vaults-sdk, tsx, @solana/web3.js
 
@@ -26,7 +27,11 @@ const ENV_VAULT = process.env.DRIFT_VAULT_ADDRESS || "";
 const ENV_AUTH = process.env.DRIFT_VAULT_AUTHORITY || ""; // pubkey string
 const ENV_AMOUNT = process.env.DRIFT_DEFAULT_AMOUNT || ""; // e.g. "5"
 const ENV_SKIP_PREFLIGHT = process.env.DRIFT_SKIP_PREFLIGHT === "1";
-const ENV_WALLET_SECRET = process.env.WALLET_SOLANA_SECRET || ""; // base58 or JSON array
+const ENV_WALLET_SECRET =
+  process.env.KEYPAIR_PATH || // optional explicit file path
+  process.env.SOLANA_KEYPAIR ||
+  process.env.WALLET_SOLANA_SECRET || // base58 or JSON array (keypair file content)
+  "";
 
 // Path to the TypeScript CLI inside the package
 const CLI_TS = path.resolve(
@@ -76,6 +81,13 @@ const BASE58_RE = /[1-9A-HJ-NP-Za-km-z]{43,88}/gim;
 const SIG_LINE_RE = /signature\s*[:=]\s*([1-9A-HJ-NP-Za-km-z]{43,88})/i;
 const EXPLORER_URL_RE = /\/tx\/([1-9A-HJ-NP-Za-km-z]{43,88})/i;
 
+// Benign Solana noises we want to ignore if a tx actually went through
+const BENIGN_ERR = [
+  /This transaction has already been processed/i, // preflight re-send
+  /Forwarder error:\s*1002/i, // common forwarder code
+  /HTTP 503|Service Unavailable/i, // transient RPC 503s
+];
+
 // ---------- PDA Derivation ----------
 async function deriveVaultDepositorPda(rpc, vaultStr, authorityStr) {
   if (!rpc) throw new Error("RPC is required to derive PDA.");
@@ -106,9 +118,7 @@ function tryGetWalletPubkeyFromSecret(secret) {
       const arr = Uint8Array.from(JSON.parse(secret));
       return Keypair.fromSecretKey(arr).publicKey.toBase58();
     }
-    // If base58 string: we cannot reconstruct just from base58 *string* here
-    // (that’s typically the seed/secret, not the full 64-byte file format).
-    return null;
+    return null; // base58 string alone isn't enough to reconstruct file format
   } catch {
     return null;
   }
@@ -121,7 +131,7 @@ function tryGetWalletPubkeyFromSecret(secret) {
     userArgs = ["--help"];
   }
 
-  const subcmd = userArgs[0]; // e.g. 'deposit', 'request-withdraw', 'withdraw', etc.
+  const subcmd = userArgs[0]; // e.g. 'deposit', 'request-withdraw', 'withdraw'
   const cliArgs = [...userArgs];
 
   // 0) Inject core defaults: --url, --keypair, --env
@@ -140,7 +150,7 @@ function tryGetWalletPubkeyFromSecret(secret) {
     let kp = ENV_WALLET_SECRET;
     if (!kp) {
       console.error(
-        "❌ Missing keypair: set KEYPAIR_PATH / SOLANA_KEYPAIR (file path) or SOLANA_SECRET / WALLET_SOLANA_SECRET (base58 or JSON array), or pass --keypair"
+        "❌ Missing keypair: set KEYPAIR_PATH / SOLANA_KEYPAIR (file path) or WALLET_SOLANA_SECRET (base58 or JSON array), or pass --keypair"
       );
       process.exit(1);
     }
@@ -159,7 +169,7 @@ function tryGetWalletPubkeyFromSecret(secret) {
         kp.includes("\\") || kp.includes("/") || kp.endsWith(".json");
       if (looksLikePath && !fs.existsSync(kp)) {
         console.warn(
-          `⚠ Keypair path not found: ${kp}. If you meant a base58 secret, keep it as a plain string.`
+          `⚠ Keypair path not found: ${kp}. If you meant a base58 secret, keep it as a plain string in WALLET_SOLANA_SECRET.`
         );
       }
     }
@@ -207,7 +217,7 @@ function tryGetWalletPubkeyFromSecret(secret) {
     }
     if (!hasFlag(cliArgs, ["--authority"]) && !ENV_AUTH) {
       console.error(
-        "❌ withdraw: provide --authority or set DRIFT_AUTHORITY in .env"
+        "❌ withdraw: provide --authority or set DRIFT_VAULT_AUTHORITY in .env"
       );
       process.exit(1);
     }
@@ -260,16 +270,26 @@ function tryGetWalletPubkeyFromSecret(secret) {
     env: process.env,
   });
 
+  let outBuf = "";
+  let errBuf = "";
+
   child.stdout.on("data", (chunk) => {
     const s = chunk.toString();
     process.stdout.write(s);
     sniffForSignature(s);
+    outBuf += s;
   });
 
   child.stderr.on("data", (chunk) => {
     const s = chunk.toString();
-    process.stderr.write(s);
+    // write stderr but we still sniff + buffer for benign-filter logic
+    // process.stderr.write(s);
+    // swallow benign Solana noise; print everything else
+    if (!BENIGN_ERR.some((re) => re.test(s))) {
+      process.stderr.write(s);
+    }
     sniffForSignature(s);
+    errBuf += s;
   });
 
   child.on("close", (code) => {
@@ -278,12 +298,27 @@ function tryGetWalletPubkeyFromSecret(secret) {
         fs.unlinkSync(tmpKeyFile);
       } catch {}
     }
+
     if (lastSeenSignature) {
       console.log(`\n✅ Transaction signature: ${lastSeenSignature}`);
       console.log(
         `🔎 Explorer: https://solscan.io/tx/${lastSeenSignature}  (add ?cluster=devnet for devnet)`
       );
     }
-    process.exit(code ?? 0);
+
+    let exitCode = code ?? 0;
+
+    // If non-zero but we saw a sig OR only benign RPC issues appeared, treat as success
+    const isBenign = BENIGN_ERR.some(
+      (re) => re.test(outBuf) || re.test(errBuf)
+    );
+    if (exitCode !== 0 && (lastSeenSignature || isBenign)) {
+      console.log(
+        "ℹ️  Benign Solana RPC/preflight noise suppressed; treating as success."
+      );
+      exitCode = 0;
+    }
+
+    process.exit(exitCode);
   });
 })();

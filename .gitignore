@@ -15,6 +15,9 @@ id.json
 # Ignore log files
 *.log
 
+# Ignore xlsx
+*.xlsx
+
 # Ignore these folders
 tests/
 tools/bridge/node_modules/
