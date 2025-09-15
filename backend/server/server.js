@@ -1,9 +1,12 @@
 // backend/server.js
-require("dotenv").config();
+//require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { spawn } = require("child_process");
 const path = require("path");
+const fs = require("fs");
+
+require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
 
 const app = express();
 app.use(express.json());
@@ -14,6 +17,7 @@ const SCRIPTS = {
   "swap-wbtc-usdc": path.resolve(
     "C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/swap/swap_wbtc_to_usdc.cjs"
   ),
+  // add others here…
   "bridge-lifi": path.resolve(
     "C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/bridge/lifi_bridge_sol.cjs"
   ),
@@ -32,7 +36,8 @@ const SCRIPTS = {
 };
 
 // 2) Runner picks interpreter based on extension
-function runScript(scriptKey, argv = []) {
+// robust runner
+function runScript(scriptKey, argv = [], envAdd = {}) {
   const file = SCRIPTS[scriptKey];
   if (!file) {
     return Promise.resolve({
@@ -42,20 +47,47 @@ function runScript(scriptKey, argv = []) {
       ).join(", ")}`,
     });
   }
+
   const ext = path.extname(file).toLowerCase();
-  // Command for python scripts
-  const cmd =
-    ext === ".py"
-      ? process.platform === "win32"
-        ? "py"
-        : "python3"
-      : process.execPath;
+  const isPy = ext === ".py";
+
+  // pick interpreter
+  let cmd;
+  if (isPy) {
+    cmd = process.platform === "win32" ? "py" : "python3";
+  } else {
+    // prefer the *current* node binary if it exists
+    cmd =
+      (process.execPath &&
+        fs.existsSync(process.execPath) &&
+        process.execPath) ||
+      "node";
+  }
+
+  const args = [file, ...argv];
+
+  // verify cwd
+  const desiredCwd = path.dirname(file);
+  const cwdExists = fs.existsSync(desiredCwd);
+  const cwd = cwdExists ? desiredCwd : undefined;
+
+  // on Windows, let the shell resolve "node"/"py"
+  const useShell =
+    process.platform === "win32" && (cmd === "node" || cmd === "py");
+
+  console.log(
+    `[runScript] cmd=${cmd} args=${JSON.stringify(args)} cwd=${
+      cwd || "<default>"
+    } shell=${useShell}`
+  );
 
   return new Promise((resolve) => {
-    const child = spawn(cmd, [file, ...argv], {
-      env: { ...process.env },
+    const child = spawn(cmd, args, {
+      cwd,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      shell: useShell,
+      env: { ...process.env, ...envAdd }, // <- WALLET_SECRET override lives here
     });
 
     let out = "",
@@ -65,14 +97,14 @@ function runScript(scriptKey, argv = []) {
     child.on("error", (e) =>
       resolve({ ok: false, error: `Spawn error: ${e.message}` })
     );
-    child.on("close", (code) => {
+    child.on("close", (code) =>
       resolve({
         ok: code === 0,
         code,
         output: out.trim(),
         error: code === 0 ? null : err || out || `exit ${code}`,
-      });
-    });
+      })
+    );
   });
 }
 
@@ -124,19 +156,39 @@ app.get("/api/debug/scripts", (_req, res) =>
 
 // 4) Routes for swap, Hyperliquid, Drift, Bridge
 
-// SWAP (forwards amountIn to swap_wbtc_to_usdc.cjs)
+// SWAP (server signs with Owner / A / B by injecting WALLET_SECRET)
 app.post("/api/swap/wbtc-usdc", async (req, res) => {
   try {
-    const { amountIn } = req.body || {};
-    // Basic sanity check (optional)
+    const { amountIn, wallet } = req.body || {};
+
     if (amountIn !== undefined && isNaN(Number(amountIn))) {
-      return res.status(400).json({
-        ok: false,
-        error: "amountIn must be numeric (string or number)",
-      });
+      return res
+        .status(400)
+        .json({ ok: false, error: "amountIn must be numeric" });
     }
+    const allowed = new Set(["owner", "A", "B"]);
+    if (!allowed.has(wallet)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "wallet must be 'owner' | 'A' | 'B'" });
+    }
+
+    const PK_MAP = {
+      owner: process.env.PK_OWNER,
+      A: process.env.PK_RECIPIENT_A,
+      B: process.env.PK_RECIPIENT_B,
+    };
+    const pk = PK_MAP[wallet];
+    if (!pk)
+      return res
+        .status(500)
+        .json({ ok: false, error: `Missing PK for wallet ${wallet}` });
+
     const argv = amountIn !== undefined ? [String(amountIn)] : [];
-    const r = await runScript("swap-wbtc-usdc", argv);
+
+    // inject the correct key so swap_wbtc_to_usdc.cjs uses it
+    const r = await runScript("swap-wbtc-usdc", argv, { WALLET_SECRET: pk });
+
     return res.status(r.ok ? 200 : 500).json(r);
   } catch (e) {
     return res
@@ -248,5 +300,6 @@ app.post("/api/hl-command", async (req, res) => {
 // 404 JSON
 app.use((_req, res) => res.status(404).json({ ok: false, error: "Not found" }));
 
-const PORT = process.env.PORT || 4000;
+// const PORT = process.env.PORT || 4000;
+const PORT = 4000;
 app.listen(PORT, () => console.log(`API on :${PORT}`));

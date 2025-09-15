@@ -1,38 +1,60 @@
-require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const { ethers } = require("ethers");
 const { runPython } = require("./python_runner.js");
 const { pathToFileURL } = require("url");
+require("dotenv").config({ path: path.join(__dirname, "../../.env") });
+const { spawn } = require("child_process");
+const { Connection, PublicKey } = require("@solana/web3.js");
+const { getAssociatedTokenAddressSync } = require("@solana/spl-token");
 
-// Backend keeper to listen to deposit and withdraw events
-// Other changes (different ratio, other recipient wallets) are not needed
-// When admin changes these, the deposit, withdraw, rebalance functions do this on-chain
+// Import these scripts (keeps code modular)
+const { buildCheckAndMaybeRebalance } = require("./rebalance");
+const { createDepositPoller } = require("./depositPoller");
+const { buildDepositPipeline } = require("./depositPipeline");
 
-// Read from .env file
-const RPC_URL = process.env.RPC_URL || "ws://127.0.0.1:8545";
+// ===== ENV =====
+const RPC_URL = process.env.ARBITRUM_ALCHEMY_MAINNET;
 const CONFIRMATIONS = Number(process.env.CONFIRMATIONS || 1);
 const VAULT_ADDRESS = process.env.VAULT_ADDRESS;
-const KEEPER_PRIVATE_KEY = process.env.KEEPER_HARDHAT_PRIVATE_KEY;
+const KEEPER_PRIVATE_KEY = process.env.KEEPER_MAINNET_PRIVATE_KEY;
 const REBALANCE_DEBOUNCE_MS = Number(
-  process.env.REBALANCE_DEBOUNCE_MS || 30000
+  process.env.REBALANCE_DEBOUNCE_MS || 30_000
 );
 
-// ===== Config =====
+// Poller config
+const EVENT_POLL_MS = Number(process.env.EVENT_POLL_MS || 4000);
+const REORG_BUFFER = Number(
+  process.env.REORG_BUFFER || Math.max(CONFIRMATIONS - 1, 2)
+);
+const START_BLOCK = process.env.START_BLOCK
+  ? Number(process.env.START_BLOCK)
+  : null;
+
+// Other config
 const MONITOR_INTERVAL_MS = Number(process.env.MONITOR_INTERVAL_MS || 60_000);
 
-// Check info from .env file
-if (!VAULT_ADDRESS) {
-  throw new Error("Missing VAULT_ADDRESS in .env");
-}
+// Sanity checks
+if (!RPC_URL)
+  throw new Error("Missing RPC_URL (ARBITRUM_ALCHEMY_MAINNET) in .env");
+if (!VAULT_ADDRESS) throw new Error("Missing VAULT_ADDRESS in .env");
 if (!KEEPER_PRIVATE_KEY) throw new Error("Missing KEEPER_PRIVATE_KEY in .env");
 
-// Load Vault ABI
+// Load Vault ABI (JSON array)
 const vaultAbiFile = path.join(__dirname, "./abi/Vault.json");
 if (!fs.existsSync(vaultAbiFile)) {
-  throw new Error("Missing ABI at backend/keeper/abi/Vault.json");
+  throw new Error(`Missing ABI at ${vaultAbiFile}`);
 }
-const vaultAbi = JSON.parse(fs.readFileSync(vaultAbiFile, "utf8")).abi;
+let vaultAbi;
+try {
+  const raw = fs.readFileSync(vaultAbiFile, "utf8").trim();
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed))
+    throw new Error("Vault.json is not a JSON array (ABI).");
+  vaultAbi = parsed;
+} catch (err) {
+  throw new Error(`Failed to load ABI: ${err.message}`);
+}
 
 // Minimal ERC20 ABI
 const erc20Abi = [
@@ -40,35 +62,22 @@ const erc20Abi = [
   "function balanceOf(address) view returns (uint256)",
 ];
 
-// Set up provider
+// Provider & contracts
 const provider = RPC_URL.startsWith("ws")
   ? new ethers.WebSocketProvider(RPC_URL)
   : new ethers.JsonRpcProvider(RPC_URL);
 
-// Set up wallet
 const wallet = new ethers.Wallet(KEEPER_PRIVATE_KEY, provider);
 const vault = new ethers.Contract(VAULT_ADDRESS, vaultAbi, provider);
 const vaultWithSigner = vault.connect(wallet);
 
-// Simple debounce mechanism to avoid reacting too many times in a row when multiple events arrive close together.
-let rebalanceTimer = null; // If null, there is no scheduled rebalance check yet.
-function scheduleRebalanceCheck(reason = "deposit") {
-  // If there’s already a pending timer, cancel it. This means we restart the clock whenever a new deposit event comes in.
-  if (rebalanceTimer) clearTimeout(rebalanceTimer);
+// WBTC contract
+const wbtc = new ethers.Contract(process.env.WBTC_ADDRESS, erc20Abi, provider);
 
-  // Start a fresh timer. After REBALANCE_DEBOUNCE_MS milliseconds (e.g. 30 seconds), it will:
-  rebalanceTimer = setTimeout(() => {
-    rebalanceTimer = null;
-    checkAndMaybeRebalance().catch((e) =>
-      console.error("checkAndMaybeRebalance error:", e)
-    );
-  }, REBALANCE_DEBOUNCE_MS);
-  console.log(
-    `⏲Scheduled rebalance check in ${REBALANCE_DEBOUNCE_MS}ms (reason: ${reason})`
-  );
-}
+// USDC contract
+const usdc = new ethers.Contract(process.env.USDC_ADDRESS, erc20Abi, provider);
 
-// Function to wait for confirmation (finalized tx)
+// ============ Helpers ============
 async function waitFinal(txHash, label) {
   try {
     await provider.waitForTransaction(txHash, CONFIRMATIONS);
@@ -78,159 +87,32 @@ async function waitFinal(txHash, label) {
   }
 }
 
-// Core logic: read on-chain balance + threshold; preflight; submit tx if OK
-async function checkAndMaybeRebalance() {
-  console.log("Checking balances & threshold…");
+// Call modular script to check whether keeper should rebalance ----
+const checkAndMaybeRebalance = buildCheckAndMaybeRebalance({
+  provider,
+  vault,
+  vaultWithSigner,
+  vaultAddress: VAULT_ADDRESS,
+  erc20Abi,
+  wbtcEnvAddress: process.env.WBTC_ADDRESS || null,
+});
 
-  // 1) Get the underlying asset from the ERC-4626 vault
-  let assetAddr;
-  try {
-    assetAddr = await vault.asset(); // standard ERC-4626
-  } catch {
-    // fallback: if your Vault exposes a public variable like 'asset()' under another name, you can hardcode env WBTC_ADDRESS
-    assetAddr = process.env.WBTC_ADDRESS;
-  }
-  if (!assetAddr)
-    throw new Error(
-      "Cannot resolve underlying asset address (vault.asset() or WBTC_ADDRESS)."
+// Debounce wrapper remains local
+let rebalanceTimer = null;
+function scheduleRebalanceCheck(reason = "deposit") {
+  if (rebalanceTimer) clearTimeout(rebalanceTimer);
+  rebalanceTimer = setTimeout(() => {
+    rebalanceTimer = null;
+    checkAndMaybeRebalance().catch((e) =>
+      console.error("checkAndMaybeRebalance error:", e)
     );
-
-  const asset = new ethers.Contract(assetAddr, erc20Abi, provider);
-
-  // 2) Read on-chain balance held by the vault & the on-chain threshold
-  const [dec, balance, minChunk] = await Promise.all([
-    asset.decimals().catch(() => 8),
-    asset.balanceOf(VAULT_ADDRESS),
-    vault.rebalanceMin().catch(() => 0n), // public variable getter
-  ]);
-
-  console.log(`   - Vault WBTC balance: ${balance}`);
-  console.log(`   - rebalanceMin:       ${minChunk}`);
-
-  // 3) If below threshold, skip
-  if (minChunk > 0n && balance < minChunk) {
-    console.log("Below rebalanceMin; skipping.");
-    return;
-  }
-
-  // Pick how much to move — here we send the full buffer
-  const amount = balance;
-
-  function hasFn(iface, sig) {
-    try {
-      iface.getFunction(sig);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  const KEEPER = ethers.id("KEEPER_ROLE"); // keccak256("KEEPER_ROLE")
-
-  async function dumpVaultDiag(vault, wallet) {
-    console.log("=== Vault diag ===");
-    try {
-      console.log("asset():", await vault.asset());
-    } catch {}
-    try {
-      console.log("owner():", await vault.owner());
-    } catch {}
-
-    // AccessControl?
-    if (hasFn(vault.interface, "hasRole(bytes32,address)")) {
-      const me = await wallet.getAddress();
-      try {
-        const hasKeeper = await vault.hasRole(KEEPER, me);
-        console.log(`hasRole(KEEPER_ROLE, ${me}) =`, hasKeeper);
-      } catch {}
-    }
-
-    // Pausable?
-    if (hasFn(vault.interface, "paused()")) {
-      try {
-        console.log("paused():", await vault.paused());
-      } catch {}
-    }
-
-    // Common config getters (optional; they may not exist in your vault)
-    for (const fn of [
-      "getRecipients()",
-      "getRecipientsAndWeights()",
-      "targets()",
-      "router()",
-      "hlRouter()",
-      "driftVault()",
-      "splitBps()",
-      "rebalanceMin()",
-    ]) {
-      if (hasFn(vault.interface, fn)) {
-        try {
-          console.log(`${fn} =>`, await vault[fn.slice(0, fn.indexOf("("))]());
-        } catch {}
-      }
-    }
-
-    console.log(
-      "rebalance overloads:",
-      hasFn(vault.interface, "rebalance()") ? "rebalance()" : "-",
-      hasFn(vault.interface, "rebalance(uint256)") ? "rebalance(uint256)" : "-"
-    );
-    console.log("==================");
-  }
-
-  // 4) Preflight: static call to ensure it won't revert
-  try {
-    if (vaultWithSigner.rebalance?.staticCall) {
-      await dumpVaultDiag(vault, wallet);
-
-      await vaultWithSigner.rebalance.staticCall(amount);
-    } else {
-      // ethers v5-ish fallback
-      await provider.call({
-        to: VAULT_ADDRESS,
-        data: vault.interface.encodeFunctionData("rebalance", []),
-      });
-    }
-  } catch (e) {
-    console.log(
-      "rebalance() preflight reverted; skipping for now.\n    Reason:",
-      e.shortMessage || e.message
-    );
-    return;
-  }
-
-  // 5) Submit the real tx
-  console.log("Conditions met. Submitting rebalance()…");
-  try {
-    const tx = await vaultWithSigner.rebalance(amount); // EIP-1559 defaults
-    console.log("rebalance() sent:", tx.hash);
-    const rcpt = await tx.wait(); // wait 1 conf by default (on HH it’s instant)
-    console.log(`rebalance() confirmed in block ${rcpt.blockNumber}`);
-  } catch (e) {
-    console.error("rebalance() tx failed:", e.shortMessage || e.message);
-  }
-}
-
-// Use script drift/read_position_info.mjs to get info on current vault position
-// Simple polling loop
-async function fetchDriftSnapshot() {
-  // Resolve relative to this file, not the current working dir
-  const mjsPath = path.resolve(
-    __dirname,
-    "../../tools/drift/read_position_info.mjs"
+  }, REBALANCE_DEBOUNCE_MS);
+  console.log(
+    `⏲ Scheduled rebalance check in ${REBALANCE_DEBOUNCE_MS}ms (reason: ${reason})`
   );
-  const fileUrl = pathToFileURL(mjsPath).href;
-
-  const mod = await import(fileUrl);
-  if (typeof mod.getDriftSnapshot !== "function") {
-    throw new Error(
-      "getDriftSnapshot() not exported from read_position_info.mjs"
-    );
-  }
-  return mod.getDriftSnapshot();
 }
 
-// Call Pyhton script for orders on Hyperliquid
-// Prevent overlapping calls (simple mutex)
+// Hyperliquid runner (kept as-is)
 let pyBusy = false;
 async function runHL(action, kvArgs) {
   if (pyBusy) {
@@ -249,37 +131,46 @@ async function runHL(action, kvArgs) {
   }
 }
 
-// ===== Utils =====
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Drift snapshot (kept as-is)
+async function fetchDriftSnapshot() {
+  const mjsPath = path.resolve(
+    __dirname,
+    "../../tools/drift/read_position_info.mjs"
+  );
+  const fileUrl = pathToFileURL(mjsPath).href;
 
+  const mod = await import(fileUrl);
+  if (typeof mod.getDriftSnapshot !== "function") {
+    throw new Error(
+      "getDriftSnapshot() not exported from read_position_info.mjs"
+    );
+  }
+  return mod.getDriftSnapshot();
+}
+
+// Optional monitors (unchanged)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let seqMonitorRunning = false;
 let stopSequentialMonitor = false;
-
-// Optioneel: een plek om laatste snapshots bij te houden
 const last = { hl: null, drift: null };
 
-// ===== De sequentiële monitor =====
 async function monitorHLThenDriftOnce() {
-  // 1) HL eerst
   try {
-    const hl = await runHL("summary"); // gebruikt jouw python runner
+    const hl = await runHL("summary");
     last.hl = hl;
     console.log("[HL] positions:", hl?.openPositions?.length ?? 0);
-    // -> hier kun je targets/tolerances checken en eventueel runHL("open"/"close") plannen
   } catch (e) {
     console.error("[HL] monitor error:", e.message);
   }
 
-  // 2) Drift daarna
   try {
-    const drift = await fetchDriftSnapshot(); // jouw bestaande functie
+    const drift = await fetchDriftSnapshot();
     last.drift = drift;
     console.log(
       `[Drift] equity: ${drift?.fmt?.balance ?? "?"} USD, ROI: ${
         drift?.roiPct?.toFixed?.(2) ?? "?"
       }%`
     );
-    // -> hier kun je scheduleRebalanceCheck("driftUpdate") of markDirty("drift") doen
   } catch (e) {
     console.error("[Drift] monitor error:", e.message);
   }
@@ -294,7 +185,7 @@ async function startSequentialMonitor() {
 
   while (!stopSequentialMonitor) {
     const t0 = Date.now();
-    await monitorHLThenDriftOnce(); // altijd HL eerst, dan Drift
+    await monitorHLThenDriftOnce();
     const elapsed = Date.now() - t0;
     const wait = Math.max(0, MONITOR_INTERVAL_MS - elapsed);
     await sleep(wait);
@@ -304,6 +195,96 @@ async function startSequentialMonitor() {
   console.log("Sequential monitor stopped.");
 }
 
+const depositPipeline = buildDepositPipeline({
+  wbtc,
+  usdc,
+  wallets: {
+    A: process.env.WALLET_RECIPIENT_A,
+    B: process.env.WALLET_RECIPIENT_B,
+  },
+  privateKeys: { A: process.env.PK_RECIPIENT_A, B: process.env.PK_RECIPIENT_B },
+  scripts: {
+    swap: path.resolve(__dirname, "../../tools/swap/swap_wbtc_to_usdc.cjs"),
+    bridge: path.resolve(__dirname, "../../tools/bridge/lifi_bridge_sol.cjs"),
+    hlDeposit: path.resolve(__dirname, "../../tools/hyperliquid/deposit_HL.py"),
+    hlOpen: path.resolve(__dirname, "../../tools/hyperliquid/create_orders.py"),
+    driftVault: path.resolve(__dirname, "../../tools/drift/vaultNew.mjs"),
+  },
+  solana: {
+    rpc: process.env.SOLANA_RPC,
+    owner: process.env.SOLANA_PUBKEY,
+    usdcMint:
+      process.env.SOLANA_USDC_MINT ||
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  },
+  provider,
+});
+
+const processedDeposits = new Set();
+const pipelineQueue = [];
+let pipelineBusy = false;
+
+function enqueuePipeline(job) {
+  if (processedDeposits.has(job.txHash)) return;
+  processedDeposits.add(job.txHash);
+  pipelineQueue.push(job);
+  if (!pipelineBusy) processQueue();
+}
+
+async function processQueue() {
+  pipelineBusy = true;
+  while (pipelineQueue.length) {
+    const job = pipelineQueue.shift();
+    try {
+      await depositPipeline(job);
+    } catch (e) {
+      console.error("pipeline error:", e);
+    }
+  }
+  pipelineBusy = false;
+}
+
+// Event listener for deposits into smart contract ----
+const poller = createDepositPoller({
+  provider,
+  vault,
+  vaultAddress: VAULT_ADDRESS,
+  confirmations: CONFIRMATIONS,
+  eventPollMs: EVENT_POLL_MS,
+  reorgBuffer: REORG_BUFFER,
+  startBlock: START_BLOCK,
+  onDeposit: async ({ args, log }) => {
+    const [caller, owner, assets, shares] = args;
+    console.log(
+      `Deposit (log)\n  tx: ${log.transactionHash}\n  caller: ${caller}\n  owner: ${owner}\n  assets: ${assets}\n  shares: ${shares}`
+    );
+
+    // Step 1: Rebalance initiated
+    await waitFinal(log.transactionHash, "Deposit");
+    scheduleRebalanceCheck("deposit");
+
+    enqueuePipeline({
+      txHash: log.transactionHash,
+      caller,
+      owner,
+      assets,
+      shares,
+    });
+
+    // Step 2: Swap wBTC to USDC
+    // C:\Users\hwdeb\Documents\blockstat_solutions_github\Algostrats\tools\swap\swap_wbtc_to_usdc.cjs AMOUNTWBTC
+
+    // Step 3: Bridge USDC to Solana (only for recipient wallet A)
+
+    // Step 4: Open position in vault for wallet A on Drift
+    // Step 5: 0pen position HL for wallet B
+
+    // If you later want to run swap/bridge/HL/Drift pipeline directly:
+    // await pipelineAfterDeposit({ caller, owner, assets, shares, log });
+  },
+});
+
+// ===== Main =====
 async function main() {
   console.log("Keeper starting…");
   console.log("RPC_URL:", RPC_URL);
@@ -311,25 +292,18 @@ async function main() {
   console.log("Signer:", await wallet.getAddress());
   console.log("Confirmations:", CONFIRMATIONS);
 
-  // Listen to deposit events
-  vault.on("Deposit", async (...args) => {
-    const event = args[args.length - 1];
-    const [caller, owner, assets, shares] = args;
-    console.log(
-      `Deposit (pending)\n  tx: ${event.log.transactionHash}\n  caller: ${caller}\n  owner: ${owner}\n  assets: ${assets}\n  shares: ${shares}`
-    );
-    // Wait for finality, then schedule a rebalance check
-    await waitFinal(event.log.transactionHash, "Deposit");
-    scheduleRebalanceCheck("deposit");
+  await poller.start();
+
+  process.on("SIGINT", () => {
+    console.log("SIGINT received, stopping deposit poller…");
+    poller.stop();
+    setTimeout(() => process.exit(0), 200);
   });
 
-  // Listen to withdraw event
-  // PM
+  // Optional:
+  // await startSequentialMonitor();
 
-  // Start de sequentiële monitor
-  //startSequentialMonitor();
-
-  console.log("Listening for Vault deposits + sequential monitoring HL→Drift…");
+  console.log("Listening for Vault deposits via modular HTTP poller…");
 }
 
 main().catch((err) => {
