@@ -26,7 +26,10 @@ export default function Admin() {
   const [showHLOut, setShowHLOut] = useState(false);
   const [showDriftOut, setShowDriftOut] = useState(false);
 
+  // local testnet
   const API = import.meta.env.VITE_ADMIN_API_URL || "http://localhost:4000";
+  //Mainnet
+  //const API = import.meta.env.ARBITRUM_ALCHEMY_MAINNET;
   const timers = useRef([]);
 
   // util: auto-clear a message after 6s

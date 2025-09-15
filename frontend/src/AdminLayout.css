@@ -11,6 +11,27 @@
   --gap: 18px;
 }
 
+.segment {
+  display: flex;
+  gap: 8px;
+}
+.seg-btn {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  color: #111827;
+  cursor: pointer;
+  font-weight: 500;
+}
+.seg-btn.active {
+  background: #16a34a;
+  color: #fff;
+  border-color: #15803d;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.15) inset;
+  font-weight: 600;
+}
+
 /* Header (reuse from earlier suggestion) */
 .page-header {
   max-width: 1200px;
