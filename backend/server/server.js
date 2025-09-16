@@ -1,45 +1,129 @@
-// backend/server.js
-//require("dotenv").config();
+// backend/server/server.js
+require("dotenv").config({
+  path: require("path").resolve(__dirname, "../../.env"),
+});
+
 const express = require("express");
 const cors = require("cors");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 
-require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
+const { makeLogger } = require("./logger");
+const logger = makeLogger("server");
 
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: "*" }));
 
-// 1) EXACT keys used by routes below
+// ----------------------------
+// Script registry (portable)
+// ----------------------------
 const SCRIPTS = {
   "swap-wbtc-usdc": path.resolve(
-    "C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/swap/swap_wbtc_to_usdc.cjs"
+    __dirname,
+    "../../tools/swap/swap_wbtc_to_usdc.cjs"
   ),
-  // add others here…
   "bridge-lifi": path.resolve(
-    "C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/bridge/lifi_bridge_sol.cjs"
-  ),
-  "hl-get-pos": path.resolve(
-    "C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/hyperliquid/create_orders.py"
-  ),
-  "drift-get-pos": path.resolve(
-    "C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/drift/read_position_info.mjs"
-  ),
-  "drift-command": path.resolve(
-    "C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/drift/vaultNew.mjs"
+    __dirname,
+    "../../tools/bridge/lifi_bridge_sol.cjs"
   ),
   "hl-command": path.resolve(
-    "C:/Users/hwdeb/Documents/blockstat_solutions_github/Algostrats/tools/hyperliquid/create_orders.py"
+    __dirname,
+    "../../tools/hyperliquid/create_orders.py"
   ),
+  "hl-get-pos": path.resolve(
+    __dirname,
+    "../../tools/hyperliquid/create_orders.py"
+  ),
+  "drift-get-pos": path.resolve(
+    __dirname,
+    "../../tools/drift/read_position_info.mjs"
+  ),
+  "drift-command": path.resolve(__dirname, "../../tools/drift/vaultNew.mjs"),
 };
 
-// 2) Runner picks interpreter based on extension
-// robust runner
-function runScript(scriptKey, argv = [], envAdd = {}) {
+// ----------------------------
+// Redaction + request logging
+// ----------------------------
+const SENSITIVE_KEYS = new Set([
+  "pk",
+  "privateKey",
+  "wallet_secret",
+  "walletsecret",
+  "seed",
+  "mnemonic",
+  "secret",
+  "apiKey",
+  "apikey",
+  "WALLET_SECRET",
+  "PK_OWNER",
+  "PK_RECIPIENT_A",
+  "PK_RECIPIENT_B",
+  "SOLANA_KEYPAIR",
+  "WALLET_SOLANA_SECRET",
+]);
+
+function redact(val, keyHint = "") {
+  if (val == null) return val;
+  if (typeof val === "string") {
+    if (keyHint && SENSITIVE_KEYS.has(keyHint)) return "***";
+    if (/^(0x)?[a-f0-9]{32,}$/i.test(val))
+      return val.slice(0, 6) + "…" + val.slice(-4);
+    return val;
+  }
+  if (Array.isArray(val)) return val.map((v) => redact(v));
+  if (typeof val === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(val)) {
+      out[k] = SENSITIVE_KEYS.has(k) ? "***" : redact(v, k);
+    }
+    return out;
+  }
+  return val;
+}
+
+// attach a request id + log request/response
+app.use((req, res, next) => {
+  const rid = crypto.randomUUID();
+  req.rid = rid;
+  const startedAt = process.hrtime.bigint();
+  const { method } = req;
+  const url = req.originalUrl || req.url;
+  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+  logger.info("api.request", {
+    rid,
+    method,
+    url,
+    ip,
+    params: redact(req.params),
+    query: redact(req.query),
+    body: redact(req.body),
+  });
+
+  res.on("finish", () => {
+    const ms = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    logger.info("api.response", {
+      rid,
+      method,
+      url,
+      status: res.statusCode,
+      duration_ms: Math.round(ms),
+      length: Number(res.getHeader("content-length") || 0),
+    });
+  });
+  next();
+});
+
+// ----------------------------
+// Runner (logs spawns)
+// ----------------------------
+function runScript(scriptKey, argv = [], envAdd = {}, ctx = {}) {
   const file = SCRIPTS[scriptKey];
   if (!file) {
+    logger.error("spawn.unknown_script", { ...ctx, scriptKey });
     return Promise.resolve({
       ok: false,
       error: `Unknown script key: ${scriptKey}. Known: ${Object.keys(
@@ -51,12 +135,10 @@ function runScript(scriptKey, argv = [], envAdd = {}) {
   const ext = path.extname(file).toLowerCase();
   const isPy = ext === ".py";
 
-  // pick interpreter
   let cmd;
   if (isPy) {
     cmd = process.platform === "win32" ? "py" : "python3";
   } else {
-    // prefer the *current* node binary if it exists
     cmd =
       (process.execPath &&
         fs.existsSync(process.execPath) &&
@@ -65,55 +147,58 @@ function runScript(scriptKey, argv = [], envAdd = {}) {
   }
 
   const args = [file, ...argv];
-
-  // verify cwd
   const desiredCwd = path.dirname(file);
-  const cwdExists = fs.existsSync(desiredCwd);
-  const cwd = cwdExists ? desiredCwd : undefined;
-
-  // on Windows, let the shell resolve "node"/"py"
-  const useShell =
+  const cwd = fs.existsSync(desiredCwd) ? desiredCwd : undefined;
+  const shell =
     process.platform === "win32" && (cmd === "node" || cmd === "py");
 
-  console.log(
-    `[runScript] cmd=${cmd} args=${JSON.stringify(args)} cwd=${
-      cwd || "<default>"
-    } shell=${useShell}`
-  );
+  const envKeys = Object.keys(envAdd || {});
+  logger.info("spawn.start", { ...ctx, scriptKey, cmd, args, cwd, envKeys });
 
+  const t0 = Date.now();
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      shell: useShell,
-      env: { ...process.env, ...envAdd }, // <- WALLET_SECRET override lives here
+      shell,
+      env: { ...process.env, ...envAdd },
     });
 
     let out = "",
       err = "";
     child.stdout.on("data", (d) => (out += d.toString()));
     child.stderr.on("data", (d) => (err += d.toString()));
-    child.on("error", (e) =>
-      resolve({ ok: false, error: `Spawn error: ${e.message}` })
-    );
-    child.on("close", (code) =>
+    child.on("error", (e) => {
+      logger.error("spawn.error", { ...ctx, scriptKey, error: e.message });
+      resolve({ ok: false, error: `Spawn error: ${e.message}` });
+    });
+    child.on("close", (code) => {
+      const ms = Date.now() - t0;
+      const ok = code === 0;
+      logger[ok ? "info" : "error"]("spawn.done", {
+        ...ctx,
+        scriptKey,
+        code,
+        duration_ms: ms,
+      });
       resolve({
-        ok: code === 0,
+        ok,
         code,
         output: out.trim(),
-        error: code === 0 ? null : err || out || `exit ${code}`,
-      })
-    );
+        error: ok ? null : err || out || `exit ${code}`,
+      });
+    });
   });
 }
 
-// Helper to build key=value args for HL
+// ----------------------------
+// HL argv builder
+// ----------------------------
 function buildArgs(action, params = {}) {
   switch (action) {
     case "summary":
       return ["summary"];
-
     case "open": {
       const { coin, side, size, slippage, leverage, margin, strict } = params;
       if (!coin || !side || !size) {
@@ -124,50 +209,50 @@ function buildArgs(action, params = {}) {
         `coin=${coin}`,
         `side=${side}`,
         `size=${size}`,
-        slippage != null ? `slippage=${slippage}` : null, // alias for slippage_frac
+        slippage != null ? `slippage=${slippage}` : null,
         leverage != null ? `leverage=${leverage}` : null,
-        margin != null ? `margin=${margin}` : null, // alias for margin_mode
-        strict != null ? `strict=${strict}` : null, // "true"/"false"
+        margin != null ? `margin=${margin}` : null,
+        strict != null ? `strict=${strict}` : null,
       ].filter(Boolean);
     }
-
-    case "close": {
-      const { coin } = params;
-      if (!coin) throw new Error("Missing coin for close");
-      return ["close", `coin=${coin}`];
-    }
-
-    case "cancel": {
-      const { coin } = params;
-      if (!coin) throw new Error("Missing coin for cancel");
-      return ["cancel", `coin=${coin}`];
-    }
-
+    case "close":
+      if (!params.coin) throw new Error("Missing coin for close");
+      return ["close", `coin=${params.coin}`];
+    case "cancel":
+      if (!params.coin) throw new Error("Missing coin for cancel");
+      return ["cancel", `coin=${params.coin}`];
     default:
       throw new Error(`Unsupported HL action: ${action}`);
   }
 }
 
-// 3) Health + debug
+// ----------------------------
+// Health & debug
+// ----------------------------
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/debug/scripts", (_req, res) =>
   res.json({ ok: true, scripts: SCRIPTS })
 );
 
-// 4) Routes for swap, Hyperliquid, Drift, Bridge
+// ----------------------------
+// Routes
+// ----------------------------
 
-// SWAP (server signs with Owner / A / B by injecting WALLET_SECRET)
+// SWAP (inject WALLET_SECRET for owner / A / B)
 app.post("/api/swap/wbtc-usdc", async (req, res) => {
-  try {
-    const { amountIn, wallet } = req.body || {};
+  const { amountIn, wallet } = req.body || {};
+  const ctx = { rid: req.rid, route: "swap-wbtc-usdc", wallet, amountIn };
 
+  try {
     if (amountIn !== undefined && isNaN(Number(amountIn))) {
+      logger.warn("route.swap.invalid_amount", ctx);
       return res
         .status(400)
         .json({ ok: false, error: "amountIn must be numeric" });
     }
     const allowed = new Set(["owner", "A", "B"]);
     if (!allowed.has(wallet)) {
+      logger.warn("route.swap.invalid_wallet", ctx);
       return res
         .status(400)
         .json({ ok: false, error: "wallet must be 'owner' | 'A' | 'B'" });
@@ -179,38 +264,64 @@ app.post("/api/swap/wbtc-usdc", async (req, res) => {
       B: process.env.PK_RECIPIENT_B,
     };
     const pk = PK_MAP[wallet];
-    if (!pk)
+    if (!pk) {
+      logger.error("route.swap.missing_pk", ctx);
       return res
         .status(500)
         .json({ ok: false, error: `Missing PK for wallet ${wallet}` });
+    }
 
     const argv = amountIn !== undefined ? [String(amountIn)] : [];
+    const r = await runScript(
+      "swap-wbtc-usdc",
+      argv,
+      { WALLET_SECRET: pk },
+      ctx
+    );
 
-    // inject the correct key so swap_wbtc_to_usdc.cjs uses it
-    const r = await runScript("swap-wbtc-usdc", argv, { WALLET_SECRET: pk });
+    if (!r.ok)
+      logger.error("route.swap.failed", {
+        ...ctx,
+        code: r.code,
+        error: r.error?.slice(0, 500),
+      });
+    else logger.info("route.swap.ok", { ...ctx, code: r.code });
 
     return res.status(r.ok ? 200 : 500).json(r);
   } catch (e) {
+    logger.error("route.swap.exception", { ...ctx, error: e.message });
     return res
       .status(500)
       .json({ ok: false, error: e.message || "swap route error" });
   }
 });
 
-// BRIDGE (forwards amountIn to lifi_bridge_sol.cjs)
+// BRIDGE (forwards amount to lifi script)
 app.post("/api/bridge/bridge-lifi", async (req, res) => {
+  const { amountIn } = req.body || {};
+  const ctx = { rid: req.rid, route: "bridge-lifi", amountIn };
+
   try {
-    const { amountIn } = req.body || {};
     if (amountIn !== undefined && isNaN(Number(amountIn))) {
-      return res.status(400).json({
-        ok: false,
-        error: "amountIn must be numeric (string or number)",
-      });
+      logger.warn("route.bridge.invalid_amount", ctx);
+      return res
+        .status(400)
+        .json({ ok: false, error: "amountIn must be numeric" });
     }
     const argv = amountIn !== undefined ? [String(amountIn)] : [];
-    const r = await runScript("bridge-lifi", argv);
+    const r = await runScript("bridge-lifi", argv, {}, ctx);
+
+    if (!r.ok)
+      logger.error("route.bridge.failed", {
+        ...ctx,
+        code: r.code,
+        error: r.error?.slice(0, 500),
+      });
+    else logger.info("route.bridge.ok", { ...ctx, code: r.code });
+
     return res.status(r.ok ? 200 : 500).json(r);
   } catch (e) {
+    logger.error("route.bridge.exception", { ...ctx, error: e.message });
     return res
       .status(500)
       .json({ ok: false, error: e.message || "bridge route error" });
@@ -218,81 +329,141 @@ app.post("/api/bridge/bridge-lifi", async (req, res) => {
 });
 
 app.post("/api/drift/get-pos-drift", async (req, res) => {
-  const r = await runScript("drift-get-pos", []);
+  const ctx = { rid: req.rid, route: "drift-get-pos" };
+  const r = await runScript("drift-get-pos", [], {}, ctx);
   res.status(r.ok ? 200 : 500).json(r);
 });
 
-// Replace your existing deposit route with this:
+// deposit to Drift vault
 app.post("/api/drift/deposit-drift", async (req, res) => {
+  const { amount } = req.body || {};
+  const ctx = { rid: req.rid, route: "drift:deposit", amount };
+
   try {
-    const { amount } = req.body || {};
     const argv = ["deposit"];
     if (amount !== undefined && amount !== "") {
       if (isNaN(Number(amount))) {
+        logger.warn("route.drift.deposit.invalid_amount", ctx);
         return res
           .status(400)
           .json({ ok: false, error: "'amount' must be numeric" });
       }
       argv.push("--amount", String(amount));
     }
-    const r = await runScript("drift-command", argv);
+    const r = await runScript("drift-command", argv, {}, ctx);
+
+    if (!r.ok)
+      logger.error("route.drift.deposit.failed", {
+        ...ctx,
+        code: r.code,
+        error: r.error?.slice(0, 500),
+      });
+    else logger.info("route.drift.deposit.ok", { ...ctx, code: r.code });
+
     res.status(r.ok ? 200 : 500).json({ ...r, argv });
   } catch (e) {
+    logger.error("route.drift.deposit.exception", { ...ctx, error: e.message });
     res
       .status(500)
       .json({ ok: false, error: e.message || "deposit route error" });
   }
 });
 
-// NEW: request-withdraw (matches your frontend /api/drift/withdraw)
+// request-withdraw from Drift
 app.post("/api/drift/withdraw", async (req, res) => {
+  const { amount } = req.body || {};
+  const ctx = { rid: req.rid, route: "drift:request-withdraw", amount };
+
   try {
-    const { amount } = req.body || {};
     const argv = ["request-withdraw"];
     if (amount !== undefined && amount !== "") {
       if (isNaN(Number(amount))) {
+        logger.warn("route.drift.withdraw.invalid_amount", ctx);
         return res
           .status(400)
           .json({ ok: false, error: "'amount' must be numeric" });
       }
       argv.push("--amount", String(amount));
     }
-    const r = await runScript("drift-command", argv);
+    const r = await runScript("drift-command", argv, {}, ctx);
+
+    if (!r.ok)
+      logger.error("route.drift.withdraw.failed", {
+        ...ctx,
+        code: r.code,
+        error: r.error?.slice(0, 500),
+      });
+    else logger.info("route.drift.withdraw.ok", { ...ctx, code: r.code });
+
     res.status(r.ok ? 200 : 500).json({ ...r, argv });
   } catch (e) {
+    logger.error("route.drift.withdraw.exception", {
+      ...ctx,
+      error: e.message,
+    });
     res
       .status(500)
       .json({ ok: false, error: e.message || "request-withdraw route error" });
   }
 });
 
-// NEW: finalize withdraw (matches your frontend /api/drift/finalize)
-// No amount needed; vaultNew.mjs will auto-derive the VaultDepositor PDA.
-app.post("/api/drift/finalize", async (_req, res) => {
+// finalize withdraw (no amount)
+app.post("/api/drift/finalize", async (req, res) => {
+  const ctx = { rid: req.rid, route: "drift:finalize" };
+
   try {
-    const r = await runScript("drift-command", ["withdraw"]);
+    const r = await runScript("drift-command", ["withdraw"], {}, ctx);
+
+    if (!r.ok)
+      logger.error("route.drift.finalize.failed", {
+        ...ctx,
+        code: r.code,
+        error: r.error?.slice(0, 500),
+      });
+    else logger.info("route.drift.finalize.ok", { ...ctx, code: r.code });
+
     res.status(r.ok ? 200 : 500).json({ ...r, argv: ["withdraw"] });
   } catch (e) {
+    logger.error("route.drift.finalize.exception", {
+      ...ctx,
+      error: e.message,
+    });
     res
       .status(500)
       .json({ ok: false, error: e.message || "finalize route error" });
   }
 });
 
-// POST /api/hl
-// body: { action: "summary" | "open" | "close" | "cancel", params?: {...} }
+// Hyperliquid command proxy
 app.post("/api/hl-command", async (req, res) => {
+  const { action, params = {} } = req.body || {};
+  const ctx = {
+    rid: req.rid,
+    route: "hl-command",
+    action,
+    params: redact(params),
+  };
+
   try {
-    const { action, params = {} } = req.body || {};
-    if (!action)
+    if (!action) {
+      logger.warn("route.hl.missing_action", ctx);
       return res.status(400).json({ ok: false, error: "Missing 'action'." });
+    }
 
     const argv = buildArgs(action, params);
-    const r = await runScript("hl-command", argv);
+    const r = await runScript("hl-command", argv, {}, ctx);
 
-    // Helpful: echo back the argv we actually ran
+    if (!r.ok)
+      logger.error("route.hl.failed", {
+        ...ctx,
+        code: r.code,
+        error: r.error?.slice(0, 500),
+      });
+    else logger.info("route.hl.ok", { ...ctx, code: r.code });
+
     res.status(r.ok ? 200 : 500).json({ ...r, argv });
   } catch (e) {
+    logger.error("route.hl.exception", { ...ctx, error: e.message });
     res.status(500).json({ ok: false, error: e.message || "HL route error" });
   }
 });
@@ -300,6 +471,9 @@ app.post("/api/hl-command", async (req, res) => {
 // 404 JSON
 app.use((_req, res) => res.status(404).json({ ok: false, error: "Not found" }));
 
-// const PORT = process.env.PORT || 4000;
-const PORT = 4000;
-app.listen(PORT, () => console.log(`API on :${PORT}`));
+// Start
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
+  logger.info("API starting", { port: PORT });
+  console.log(`API on :${PORT}`);
+});

@@ -1,3 +1,4 @@
+// backend/keeper/index.js
 const fs = require("fs");
 const path = require("path");
 const { ethers } = require("ethers");
@@ -7,6 +8,10 @@ require("dotenv").config({ path: path.join(__dirname, "../../.env") });
 const { spawn } = require("child_process");
 const { Connection, PublicKey } = require("@solana/web3.js");
 const { getAssociatedTokenAddressSync } = require("@solana/spl-token");
+
+// Logging (separate file for keeper)
+const { makeLogger } = require("./logger");
+const logger = makeLogger("keeper");
 
 // Import these scripts (keeps code modular)
 const { buildCheckAndMaybeRebalance } = require("./rebalance");
@@ -79,11 +84,17 @@ const usdc = new ethers.Contract(process.env.USDC_ADDRESS, erc20Abi, provider);
 
 // ============ Helpers ============
 async function waitFinal(txHash, label) {
+  const t0 = Date.now();
   try {
+    logger.info("waitFinal.start", {
+      label,
+      txHash,
+      confirmations: CONFIRMATIONS,
+    });
     await provider.waitForTransaction(txHash, CONFIRMATIONS);
-    console.log(`[finalized] ${label} @ ${txHash}`);
+    logger.info("waitFinal.finalized", { label, txHash, ms: Date.now() - t0 });
   } catch (e) {
-    console.error(`waitForTransaction failed for ${label}:`, e.message);
+    logger.error("waitFinal.error", { label, txHash, error: e.message });
   }
 }
 
@@ -95,6 +106,7 @@ const checkAndMaybeRebalance = buildCheckAndMaybeRebalance({
   vaultAddress: VAULT_ADDRESS,
   erc20Abi,
   wbtcEnvAddress: process.env.WBTC_ADDRESS || null,
+  logger, // pass logger down if your module accepts it
 });
 
 // Debounce wrapper remains local
@@ -103,29 +115,28 @@ function scheduleRebalanceCheck(reason = "deposit") {
   if (rebalanceTimer) clearTimeout(rebalanceTimer);
   rebalanceTimer = setTimeout(() => {
     rebalanceTimer = null;
+    logger.info("rebalance.trigger", { reason });
     checkAndMaybeRebalance().catch((e) =>
-      console.error("checkAndMaybeRebalance error:", e)
+      logger.error("rebalance.error", { error: e.message || String(e) })
     );
   }, REBALANCE_DEBOUNCE_MS);
-  console.log(
-    `⏲ Scheduled rebalance check in ${REBALANCE_DEBOUNCE_MS}ms (reason: ${reason})`
-  );
+  logger.info("rebalance.scheduled", { reason, in_ms: REBALANCE_DEBOUNCE_MS });
 }
 
 // Hyperliquid runner (kept as-is)
 let pyBusy = false;
 async function runHL(action, kvArgs) {
   if (pyBusy) {
-    console.log("🔒 HL call skipped: previous call still running");
+    logger.warn("hl.skip_busy", { action });
     return;
   }
   pyBusy = true;
   try {
     const res = await runPython(action, kvArgs);
-    console.log("✅ HL result:", res);
+    logger.info("hl.ok", { action, result: res });
     return res;
   } catch (e) {
-    console.error("❌ HL error:", e.message);
+    logger.error("hl.error", { action, error: e.message });
   } finally {
     pyBusy = false;
   }
@@ -158,41 +169,40 @@ async function monitorHLThenDriftOnce() {
   try {
     const hl = await runHL("summary");
     last.hl = hl;
-    console.log("[HL] positions:", hl?.openPositions?.length ?? 0);
+    logger.info("monitor.hl", {
+      openPositions: hl?.openPositions?.length ?? 0,
+    });
   } catch (e) {
-    console.error("[HL] monitor error:", e.message);
+    logger.error("monitor.hl.error", { error: e.message });
   }
 
   try {
     const drift = await fetchDriftSnapshot();
     last.drift = drift;
-    console.log(
-      `[Drift] equity: ${drift?.fmt?.balance ?? "?"} USD, ROI: ${
-        drift?.roiPct?.toFixed?.(2) ?? "?"
-      }%`
-    );
+    logger.info("monitor.drift", {
+      equity: drift?.fmt?.balance ?? "?",
+      roiPct: drift?.roiPct ?? null,
+    });
   } catch (e) {
-    console.error("[Drift] monitor error:", e.message);
+    logger.error("monitor.drift.error", { error: e.message });
   }
 }
 
 async function startSequentialMonitor() {
   if (seqMonitorRunning) return;
   seqMonitorRunning = true;
-  console.log(
-    `Starting sequential monitor (HL → Drift) every ${MONITOR_INTERVAL_MS}ms`
-  );
+  logger.info("monitor.start", { interval_ms: MONITOR_INTERVAL_MS });
 
   while (!stopSequentialMonitor) {
     const t0 = Date.now();
-    await monitorHLThenDriftOnce();
+    await monitorHLThenDriftOnce(); // always HL first, then Drift
     const elapsed = Date.now() - t0;
     const wait = Math.max(0, MONITOR_INTERVAL_MS - elapsed);
     await sleep(wait);
   }
 
   seqMonitorRunning = false;
-  console.log("Sequential monitor stopped.");
+  logger.info("monitor.stopped");
 }
 
 const depositPipeline = buildDepositPipeline({
@@ -218,6 +228,7 @@ const depositPipeline = buildDepositPipeline({
       "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   },
   provider,
+  logger, // let the pipeline log to keeper log as well
 });
 
 const processedDeposits = new Set();
@@ -225,9 +236,20 @@ const pipelineQueue = [];
 let pipelineBusy = false;
 
 function enqueuePipeline(job) {
-  if (processedDeposits.has(job.txHash)) return;
+  if (processedDeposits.has(job.txHash)) {
+    logger.info("pipeline.skip_duplicate", { txHash: job.txHash });
+    return;
+  }
   processedDeposits.add(job.txHash);
   pipelineQueue.push(job);
+  logger.info("pipeline.enqueue", {
+    txHash: job.txHash,
+    caller: job.caller,
+    owner: job.owner,
+    assets: job.assets?.toString?.() ?? String(job.assets),
+    shares: job.shares?.toString?.() ?? String(job.shares),
+    queued: pipelineQueue.length,
+  });
   if (!pipelineBusy) processQueue();
 }
 
@@ -235,10 +257,16 @@ async function processQueue() {
   pipelineBusy = true;
   while (pipelineQueue.length) {
     const job = pipelineQueue.shift();
+    const t0 = Date.now();
     try {
+      logger.info("pipeline.start", { txHash: job.txHash });
       await depositPipeline(job);
+      logger.info("pipeline.done", { txHash: job.txHash, ms: Date.now() - t0 });
     } catch (e) {
-      console.error("pipeline error:", e);
+      logger.error("pipeline.error", {
+        txHash: job.txHash,
+        error: e.message || String(e),
+      });
     }
   }
   pipelineBusy = false;
@@ -255,14 +283,19 @@ const poller = createDepositPoller({
   startBlock: START_BLOCK,
   onDeposit: async ({ args, log }) => {
     const [caller, owner, assets, shares] = args;
-    console.log(
-      `Deposit (log)\n  tx: ${log.transactionHash}\n  caller: ${caller}\n  owner: ${owner}\n  assets: ${assets}\n  shares: ${shares}`
-    );
+    logger.info("deposit.detected", {
+      txHash: log.transactionHash,
+      caller,
+      owner,
+      assets: assets?.toString?.() ?? String(assets),
+      shares: shares?.toString?.() ?? String(shares),
+    });
 
     // Step 1: Rebalance initiated
     await waitFinal(log.transactionHash, "Deposit");
     scheduleRebalanceCheck("deposit");
 
+    // Step 2+: enqueue pipeline (swap/bridge/HL/Drift)
     enqueuePipeline({
       txHash: log.transactionHash,
       caller,
@@ -270,43 +303,52 @@ const poller = createDepositPoller({
       assets,
       shares,
     });
-
-    // Step 2: Swap wBTC to USDC
-    // C:\Users\hwdeb\Documents\blockstat_solutions_github\Algostrats\tools\swap\swap_wbtc_to_usdc.cjs AMOUNTWBTC
-
-    // Step 3: Bridge USDC to Solana (only for recipient wallet A)
-
-    // Step 4: Open position in vault for wallet A on Drift
-    // Step 5: 0pen position HL for wallet B
-
-    // If you later want to run swap/bridge/HL/Drift pipeline directly:
-    // await pipelineAfterDeposit({ caller, owner, assets, shares, log });
   },
 });
 
 // ===== Main =====
 async function main() {
-  console.log("Keeper starting…");
-  console.log("RPC_URL:", RPC_URL);
-  console.log("Vault:", VAULT_ADDRESS);
-  console.log("Signer:", await wallet.getAddress());
-  console.log("Confirmations:", CONFIRMATIONS);
+  logger.info("keeper.starting", {
+    rpc: RPC_URL,
+    vault: VAULT_ADDRESS,
+    confirmations: CONFIRMATIONS,
+  });
+  logger.info("keeper.signer", { address: await wallet.getAddress() });
 
   await poller.start();
+  logger.info("poller.started", {
+    eventPollMs: EVENT_POLL_MS,
+    reorgBuffer: REORG_BUFFER,
+    startBlock: START_BLOCK,
+  });
 
   process.on("SIGINT", () => {
-    console.log("SIGINT received, stopping deposit poller…");
-    poller.stop();
+    logger.warn("sigint.received", { msg: "stopping deposit poller…" });
+    try {
+      poller.stop();
+    } catch (e) {
+      logger.error("poller.stop.error", { error: e.message });
+    }
     setTimeout(() => process.exit(0), 200);
   });
 
-  // Optional:
+  // Optional background monitor
   // await startSequentialMonitor();
 
-  console.log("Listening for Vault deposits via modular HTTP poller…");
+  logger.info("keeper.ready", {
+    msg: "Listening for Vault deposits via modular HTTP poller…",
+  });
 }
 
 main().catch((err) => {
-  console.error("❌ Keeper crashed:", err);
+  logger.error("keeper.crashed", { error: err.message || String(err) });
   process.exit(1);
+});
+
+// Log any unhandled errors so they don't get lost
+process.on("unhandledRejection", (reason) => {
+  logger.error("unhandledRejection", { reason: String(reason) });
+});
+process.on("uncaughtException", (err) => {
+  logger.error("uncaughtException", { error: err.message, stack: err.stack });
 });

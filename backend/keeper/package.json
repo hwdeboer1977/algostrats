@@ -17,6 +17,8 @@
     "bullmq": "^5.58.4",
     "dotenv": "^17.2.2",
     "ethers": "^6.15.0",
-    "ioredis": "^5.7.0"
+    "ioredis": "^5.7.0",
+    "winston": "^3.17.0",
+    "winston-daily-rotate-file": "^5.0.0"
   }
 }

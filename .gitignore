@@ -25,5 +25,6 @@ tools/bridge/old/
 tools/drift/node_modules/
 tools/drift/OLD/
 frontend/node_modules/
-
-
+backend/keeper/OLD/
+backend/logs/
+backend/server/OLD/
