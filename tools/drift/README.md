@@ -13,6 +13,7 @@ This repo contains a small toolkit around the **Drift Vaults** program on Solana
 - **`read_position_info.mjs`** — Programmatic snapshot helper:
   - Calls the Drift SDK + your local CLI to fetch **vault equity (USDC)**, shares, your balance, earnings, and ROI; returns a neat JS object (and prints a readable summary if run directly).
 - **`derive_VaultDepositor.mjs`** — Standalone **PDA derivation** script for a given vault and authority. Handy for inspection and debugging.
+- **`request_withdraw.mjs`** — Request a withdraw in **USDC terms** instead of shares. Runs `read_position_info.mjs` to compute shares needed, then calls `vaultNew.mjs request-withdraw`.
 - **`createTestKeypair.mjs`** — Generates a fresh Solana keypair, prints the pubkey, and saves the secret key JSON (`id_test.json`).
 - **`convertKeyPair.mjs`** — Converts a base58 secret from `.env` into the JSON keypair format `id.json` (64-byte array).
 
@@ -67,53 +68,30 @@ npm install @drift-labs/vaults-sdk tsx @solana/web3.js @solana/spl-token dotenv
 
 ### Subcommands (proxied to the SDK CLI)
 
-The first arg is the SDK subcommand: e.g. `deposit`, `request-withdraw`, `withdraw`, or anything supported by `@drift-labs/vaults-sdk/cli.ts`.
-
 Examples:
 
 ```bash
-# Show CLI help (default if you pass no args)
-node vaultNew.mjs --help
-
 # Deposit using defaults from .env (vault address, deposit authority, amount)
 node vaultNew.mjs deposit
 
-# Request a withdraw (uses .env DRIFT_VAULT_ADDRESS, DRIFT_VAULT_AUTHORITY, DRIFT_DEFAULT_AMOUNT)
+# Request a withdraw (defaults from .env)
 node vaultNew.mjs request-withdraw
 
-# Withdraw: if you omit --vault-depositor-address, it derives the PDA automatically
+# Withdraw: derives VaultDepositor PDA if missing
 node vaultNew.mjs withdraw
 ```
 
-What `vaultNew.mjs` does for you:
-
-- **Env injection:** Ensures `--url` and `--keypair` are set (from `SOLANA_RPC`/`RPC_URL` and `WALLET_SOLANA_SECRET`), plus `--env`. Adds `--vault-address` and authority/amount flags where appropriate.
-- **PDA derivation for withdraw:** If you didn’t pass `--vault-depositor-address`, it derives it using seeds `["vault_depositor", vaultPubkey, authorityPubkey]` and the vault account’s **owner** (the vaults program id) as the program id. You’ll see `ℹ Derived depositor PDA: ...` printed.
-- **Signature sniffing:** Captures base58 transaction signatures from stdout/stderr and prints a final summary with a **Solscan** link.
-- **Skip preflight:** Adds `--skip-preflight` when `DRIFT_SKIP_PREFLIGHT=1`.
-
-> Under the hood it spawns: `npx tsx <path>/@drift-labs/vaults-sdk/cli/cli.ts ...args` and passes your arguments plus injected defaults.
-
 ---
 
-## 📊 `read_position_info.mjs` — Programmatic Snapshot
+## 📊 `read_position_info.mjs`
 
-This helper returns a **structured snapshot** for dashboards/keepers and can also print a readable summary if run directly.
-
-- Connects via `SOLANA_RPC` and **fetches vault and depositor accounts**.
-- Determines **deposit mint decimals** (fetching the mint when available).
-- Invokes your local CLI (`vault.mjs` path is configurable) to parse **`vaultEquity (USDC)`**, converts to base units (6 dp), and computes:
-  - `totalShares`, `yourShares`, `netDeposits`
-  - `ppsScaled`, `yourBalance`, `earnings`, `roiPct`
-  - plus pretty-formatted strings in `fmt`.
-
-Run it:
+Returns a **structured snapshot** for dashboards/keepers and can also print a readable summary if run directly.
 
 ```bash
 node read_position_info.mjs
 ```
 
-Use it as a library (example):
+Or as a library:
 
 ```js
 import { getDriftSnapshot } from "./read_position_info.mjs";
@@ -123,75 +101,56 @@ console.log(s.fmt.balance, s.roiPct);
 
 ---
 
-## 🔑 Keypair utilities
+## 💸 `request_withdraw.mjs`
 
-- **Create a brand-new keypair (for testing):**
+Request a withdrawal in **USDC terms** instead of shares.
 
-  ```bash
-  node createTestKeypair.mjs
-  # -> prints pubkey, writes id_test.json
-  ```
+**Usage:**
 
-  Saves a JSON array (64 bytes) compatible with Solana CLI tooling.
+```bash
+node request_withdraw.mjs --usdc 50 --vault-address <VAULT> --authority <YOU>
+```
 
-- **Convert base58 secret (from .env) to JSON keypair:**
-  ```bash
-  node convertKeyPair.mjs
-  # -> reads WALLET_SOLANA_SECRET from .env, writes id.json
-  ```
-  Decodes the base58 secret and dumps it as an array for convenience.
+What it does:
 
-> Note: `vaultNew.mjs` can **materialize a temp keypair file** automatically if you provide the JSON array form via `WALLET_SOLANA_SECRET=[...]`. It cleans this file up after the run.
+1. Reads vault stats via `read_position_info.mjs`.
+2. Computes price/share and converts USDC → shares.
+3. Calls `vaultNew.mjs request-withdraw --amount <shares>`.
+4. Prints follow-up instructions to run `withdraw` after the redeem delay.
 
 ---
 
-## 🧮 Deriving the VaultDepositor PDA (standalone)
+## 🔑 Keypair utilities
 
-If you want to compute the PDA manually:
+- **Create a brand-new keypair:**
+  ```bash
+  node createTestKeypair.mjs
+  ```
+- **Convert base58 secret → JSON keypair:**
+  ```bash
+  node convertKeyPair.mjs
+  ```
+
+---
+
+## 🧮 Deriving the VaultDepositor PDA
 
 ```bash
 node derive_VaultDepositor.mjs <VAULT_ADDRESS> [AUTHORITY_PUBKEY]
 ```
 
-- The script fetches the **vault account** to read its **owner** (the vaults program id) and derives the PDA via:
-  ```
-  seeds = ["vault_depositor", vault, authority]
-  ```
-  Prints the PDA and bump.
-
 ---
 
 ## 🧪 Typical flows
 
-- **Deposit (happy path)**
-
-  1. Fund your wallet.
-  2. Set `DRIFT_VAULT_ADDRESS`, `DRIFT_VAULT_AUTHORITY`, `DRIFT_DEFAULT_AMOUNT` in `.env`.
-  3. `node vaultNew.mjs deposit` → confirm tx; signature and explorer link are printed.
-
-- **Withdraw (with auto-PDA)**
-
-  1. Ensure `DRIFT_VAULT_ADDRESS` and `DRIFT_VAULT_AUTHORITY` are set.
-  2. `node vaultNew.mjs withdraw` → PDA derived and injected; signature printed.
-
-- **Monitor position**
-  - `node read_position_info.mjs` → prints **equity, shares, net deposits, earnings, ROI**. Use the exported function in your keeper/agent.
-
----
-
-## 🛠 Troubleshooting
-
-- **“Missing RPC URL / keypair”** — ensure `SOLANA_RPC` (or `RPC_URL`) and a **wallet secret** are present in `.env`. Acceptable secret forms: JSON array (64 bytes), base58 string, or path to a JSON keypair. `vaultNew.mjs` will fail fast with clear errors if not found.
-- **Withdraw needs PDA** — if you don’t pass `--vault-depositor-address`, the script derives it; if derivation fails, verify **vault address** and **authority pubkey**.
-- **`read_position_info.mjs` can’t find `vaultEquity (USDC)`** — it parses your local CLI output; confirm `CLI_PATH` and that the CLI prints that line (it matches the regex inside the script).
-
----
-
-## 🔐 Security Notes
-
-- Treat any `id.json` / `id_test.json` as **sensitive**. Never commit secrets.
-- Prefer environment variables or a secure secrets manager in production.
-- The convenience printing of **tx signatures** is for visibility; always verify on-chain.
+- **Deposit:**  
+  `node vaultNew.mjs deposit`
+- **Request Withdraw in USDC:**  
+  `node request_withdraw.mjs --usdc 100 --vault-address <VAULT> --authority <YOU>`
+- **Withdraw (auto PDA):**  
+  `node vaultNew.mjs withdraw`
+- **Monitor:**  
+  `node read_position_info.mjs`
 
 ---
 
@@ -202,6 +161,7 @@ convertKeyPair.mjs        # Base58 secret (.env) -> id.json (JSON keypair)
 createTestKeypair.mjs     # Generate test keypair (pubkey + id_test.json)
 derive_VaultDepositor.mjs # Derive VaultDepositor PDA from vault + authority
 read_position_info.mjs    # Programmatic vault snapshot (equity, ROI, etc.)
+request_withdraw.mjs      # Withdraw in USDC terms, auto-converts to shares
 vaultNew.mjs              # Wrapper around Drift Vaults TS CLI (defaults, PDA, sig)
 ```
 

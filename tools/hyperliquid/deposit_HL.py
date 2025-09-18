@@ -187,18 +187,34 @@ def main():
     if usdc_bal < amount_raw:
         die("Insufficient USDC balance")
 
-    # build & send tx
+   # --- build & send tx (EIP-1559, type 2) ---
     nonce = w3.eth.get_transaction_count(from_addr)
-    gas_price = w3.eth.gas_price  # Arbitrum uses gasPrice (not EIP-1559)
+
+    # estimate gas (pad a bit)
     gas_est = usdc.functions.transfer(HL_BRIDGE2, amount_raw).estimate_gas({"from": from_addr})
-    gas = int(gas_est * 1.2)  # pad 20%
+    gas = int(gas_est * 1.2)
+
+    # fee params
+    latest = w3.eth.get_block("latest")
+    base = int(latest.get("baseFeePerGas") or 0)
+
+    # priority tip: Arbitrum accepts 0, but add a tiny tip to be safe
+    try:
+        priority = int(w3.eth.max_priority_fee)  # web3.py v6 (int)
+    except Exception:
+        priority = int(0.01 * 1e9)  # 0.01 gwei
+
+    # headroom so base can rise a few blocks while pending
+    max_fee = int(base * 2 + priority)   # bump to *3 if you still see errors
 
     tx = usdc.functions.transfer(HL_BRIDGE2, amount_raw).build_transaction({
         "from": from_addr,
         "nonce": nonce,
         "chainId": CHAIN_ID,
         "gas": gas,
-        "gasPrice": gas_price,
+        "type": 2,
+        "maxFeePerGas": max_fee,
+        "maxPriorityFeePerGas": priority,
     })
 
     signed = acct.sign_transaction(tx)

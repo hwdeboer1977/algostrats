@@ -7,6 +7,9 @@ Examples:
   python create_orders.py open coin=ETH side=buy size=0.025 slippage=0.01 leverage=10 margin=cross
   python create_orders.py open coin=ETH side=sell size=0.05 leverage=5 margin=isolated
   python create_orders.py close coin=ETH
+  python create_orders.py close coin=ETH pct=10
+  python create_orders.py close coin=ETH close_size=0.003
+  python create_orders.py close coin=ETH pct=10 close_slippage=0.005
   python create_orders.py cancel coin=ETH
 
 If no args are provided, it falls back to the USER CONFIG block.
@@ -20,7 +23,8 @@ from typing import Any, Dict, List, Optional
 
 from hyperliquid.utils import constants
 from hyperliquid.info import Info
-
+from decimal import Decimal, getcontext
+getcontext().prec = 28
 import example_utils  # must be in the same folder
 
 # Make stdout tolerant on Windows consoles
@@ -48,8 +52,11 @@ OPEN_PARAMS = {
     "strict": False,        # True => fail if leverage/size isn't feasible (cross)
 }
 
-# For ACTION == "close"
+# For ACTION == "close" (supports partial close)
 CLOSE_COIN: str = "ETH"
+CLOSE_PCT: float | None = None      # e.g., 10 means close 10% of current position
+CLOSE_SIZE: float | None = None     # alternative: close fixed coin size (e.g., 0.003)
+CLOSE_SLIPPAGE_FRAC: float = 0.01   # 1% default slippage for partial close
 
 # For ACTION == "cancel"
 CANCEL_COIN: str = "ETH"
@@ -293,6 +300,102 @@ def close_market(coin: str) -> Dict[str, Any]:
     res = exchange.market_close(coin)
     return {"action": "close", "coin": coin, "result": res}
 
+def _get_pos_szi(info: "Info", address: str, coin: str) -> float:
+    us = info.user_state(address)
+    for ap in us.get("assetPositions", []):
+        pos = ap.get("position", {})
+        if pos.get("coin") == coin:
+            try:
+                return float(pos.get("szi", 0.0))
+            except Exception:
+                return 0.0
+    return 0.0
+
+def _market_open_reduce_only(exchange, coin: str, is_buy: bool, size: float, slippage_frac: float):
+    """
+    Try common SDK variants for reduce-only market order.
+    Falls back to plain market_open if reduce-only flag isn't supported.
+    """
+    attempts = []
+
+    def _try(name, *args):
+        try:
+            fn = getattr(exchange, name)
+            return {"ok": True, "fn": name, "args": list(args), "response": fn(*args)}
+        except Exception as e:
+            return {"ok": False, "fn": name, "args": list(args), "errorType": type(e).__name__, "errorRepr": repr(e)}
+
+    variants = [
+        # name, args...
+        ("market_open", coin, is_buy, float(size), None, float(slippage_frac), True),   # reduce_only as 6th param
+        ("marketOpen",  coin, is_buy, float(size), None, float(slippage_frac), True),
+        ("market_open", coin, is_buy, float(size), None, float(slippage_frac)),         # no reduce_only supported
+        ("marketOpen",  coin, is_buy, float(size), None, float(slippage_frac)),
+    ]
+    for v in variants:
+        name, *args = v
+        if hasattr(exchange, name):
+            r = _try(name, *args)
+            attempts.append(r)
+            if r["ok"]:
+                return r
+    return {"ok": False, "attempts": attempts, "error": "no_matching_market_open_variant"}
+
+def close_market_partial(coin: str, pct: float | None, size: float | None, slippage_frac: float = 0.01) -> Dict[str, Any]:
+    """
+    Partially close a position:
+      - If `size` is provided (coin units), that takes precedence.
+      - Else if `pct` (0..100) is provided, closes that percentage.
+      - Else falls back to full close.
+    Always clamps to not overshoot current abs(szi).
+    """
+    address, info, exchange = _setup(skip_ws=True)
+    szi = _get_pos_szi(info, address, coin)
+
+    if szi == 0.0:
+        return {"action": "close", "coin": coin, "status": "no_position"}
+
+    abs_szi = abs(szi)
+
+    # Determine target size to reduce
+    if size is not None:
+        target = float(size)
+    elif pct is not None:
+        if pct <= 0:
+            return {"action": "close", "coin": coin, "status": "pct<=0_noop"}
+        target = abs_szi * float(pct) / 100.0
+    else:
+        # full close if neither given
+        res = exchange.market_close(coin)
+        return {"action": "close_full", "coin": coin, "requested": "full", "result": res}
+
+    # Clamp to current position so we never flip
+    target = max(0.0, min(target, abs_szi))
+    if target == 0.0:
+        return {"action": "close", "coin": coin, "status": "target_zero_after_clamp"}
+
+    # Opposite side of current position
+    is_buy = (szi < 0)  # if short, buy to reduce; if long, sell to reduce
+    attempt = _market_open_reduce_only(exchange, coin, is_buy, target, slippage_frac)
+
+    # Read back position
+    us_after = info.user_state(address)
+    new_szi = _get_pos_szi(info, address, coin)
+
+    return {
+        "action": "close_partial",
+        "coin": coin,
+        "initial_szi": szi,
+        "requested_pct": pct,
+        "requested_size": size,
+        "executed_reduce": target,
+        "side": "buy" if is_buy else "sell",
+        "slippage_frac": slippage_frac,
+        "sdkAttempt": attempt,
+        "postFill_szi": new_szi,
+    }
+
+
 # Cancel orders
 def cancel_resting_orders(coin: str) -> Dict[str, Any]:
     """Cancel all resting orders for a specific coin for the configured address."""
@@ -319,9 +422,10 @@ def _apply_kv_overrides(pairs: list[str]) -> None:
     Apply simple key=value overrides from the command line to the config vars.
     Supported keys:
       - For open: coin, side, size, slippage/slippage_frac, leverage, margin/margin_mode, strict
-      - For close/cancel: coin
+      - For close/cancel: coin, pct/close_pct, close_size, close_slippage(_frac)
     """
-    global OPEN_PARAMS, CLOSE_COIN, CANCEL_COIN
+    global OPEN_PARAMS, CLOSE_COIN, CANCEL_COIN, CLOSE_PCT, CLOSE_SIZE, CLOSE_SLIPPAGE_FRAC
+
     for raw in pairs:
         if "=" not in raw:
             continue
@@ -334,25 +438,50 @@ def _apply_kv_overrides(pairs: list[str]) -> None:
             if k == "coin":
                 CLOSE_COIN = v
                 CANCEL_COIN = v
+
         elif k in ("size",):
             try:
                 OPEN_PARAMS["size"] = float(v)
             except ValueError:
                 pass
+
         elif k in ("slippage", "slippage_frac"):
             try:
                 OPEN_PARAMS["slippage_frac"] = float(v)
             except ValueError:
                 pass
+
         elif k in ("leverage",):
             try:
                 OPEN_PARAMS["leverage"] = int(v)
             except ValueError:
                 OPEN_PARAMS["leverage"] = None
+
         elif k in ("margin_mode", "mode", "margin"):
             OPEN_PARAMS["margin_mode"] = v
+
         elif k in ("strict",):
             OPEN_PARAMS["strict"] = v.lower() in ("1", "true", "yes", "y", "on")
+
+        # ---- partial close knobs ----
+        elif k in ("pct", "close_pct"):
+            try:
+                CLOSE_PCT = float(v)
+            except ValueError:
+                CLOSE_PCT = None
+
+        elif k in ("close_size",):
+            try:
+                CLOSE_SIZE = float(v)
+            except ValueError:
+                CLOSE_SIZE = None
+
+        elif k in ("close_slippage", "close_slippage_frac"):
+            try:
+                CLOSE_SLIPPAGE_FRAC = float(v)
+            except ValueError:
+                pass
+
 
 
 def _resolve_action_from_argv(default_action: str) -> str:
@@ -380,6 +509,31 @@ def main():
         print("\nAccount Summary")
         print(_pretty(summary))  # keep this as the last print for summary
 
+        def num(x):
+            return Decimal(str(x)) if x is not None else Decimal(0)
+
+        # Get account value
+        # Convert ALL numeric-looking fields with num()
+        ms = summary.get("marginSummary", {})
+        accountvalue = num(ms.get("accountValue"))          # total equity (USD)
+       
+        # Sum unrealized PnL across all open positions
+        pnl_usd = sum(
+            (num(item.get("position", {}).get("unrealizedPnl"))
+            for item in (summary.get("openPositions") or [])),
+            start=Decimal(0)
+        )
+       
+        cash_usd  = accountvalue - pnl_usd   # USDC without positions (if you closed now)
+        pos_usd   = pnl_usd                # USDC from open positions (can be negative)
+        total_usd = accountvalue             # USDC including positions
+
+        print("cash_usd:", cash_usd)
+        print("pos_usd:", pos_usd)
+        print("total_usd:", total_usd)
+
+
+
     elif action == "open":
         coin = OPEN_PARAMS["coin"]
         side = OPEN_PARAMS["side"]
@@ -393,10 +547,13 @@ def main():
         print(_pretty(result))
 
     elif action == "close":
-        result = close_market(CLOSE_COIN)
+        # If CLOSE_PCT or CLOSE_SIZE is specified, do partial close. Otherwise full.
+        if (CLOSE_PCT is not None) or (CLOSE_SIZE is not None):
+            result = close_market_partial(CLOSE_COIN, CLOSE_PCT, CLOSE_SIZE, CLOSE_SLIPPAGE_FRAC)
+        else:
+            result = close_market(CLOSE_COIN)
         print("\nClose Market Result")
         print(_pretty(result))
-
     elif action == "cancel":
         result = cancel_resting_orders(CANCEL_COIN)
         print("\nCancel Orders Result")

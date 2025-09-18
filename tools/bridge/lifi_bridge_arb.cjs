@@ -2,6 +2,8 @@ const path = require("path");
 // Load environment variables from .env file two levels up
 require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
 
+const { ethers } = require("ethers");
+
 // Import LI.FI SDK components
 const {
   createConfig: createLifiConfig,
@@ -56,13 +58,18 @@ createLifiConfig({
 });
 
 async function main() {
+  // CLI: node bridge_sol_to_arb.js <amountUSDC>
+  const humanAmount = process.argv[2] ?? "5";
+  // USDC = 6 decimals on both chains
+  const fromAmount = ethers.parseUnits(humanAmount, 6).toString();
   // Parameters for bridge/route
+
   const params = {
     fromChainId: 1151111081099710, // Solana (LI.FI chain id)
     toChainId: 42161, // Arbitrum
     fromTokenAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC (Sol)
     toTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // USDC (ARB)
-    fromAmount: "1000000", // 1 USDC (6 dp)
+    fromAmount: fromAmount, // USDC (6 dp)
     fromAddress: process.env.SOLANA_PUBKEY,
     toAddress: evmAccount.address,
   };
