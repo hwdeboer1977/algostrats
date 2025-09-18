@@ -44,6 +44,12 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
     // Net Asset Value (NAV) of assets held off-contract (sum for A+B), in WBTC units (8 decimals).
     uint256 public externalNav;
 
+    uint256 public redemptionPeriod; // Redemption period in seconds
+ 
+    // Withdrawal queue state 
+    mapping(address => uint256) public pendingShares;     // shares locked for withdrawal
+    mapping(address => uint256) public pendingUnlockAt;   // when those shares unlock
+
     // Allow for difference owner and keeper
     mapping(address => bool) public isKeeper;
     event KeeperSet(address indexed keeper, bool enabled);
@@ -60,10 +66,20 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
     event Rebalanced(uint256 amount, uint256 toA, uint256 toB);
     event Rescued(address indexed token, address indexed to, uint256 amount);
     event ExternalNavAdjusted(int256 delta, uint256 newNav);
+    event RedemptionPeriodUpdated(uint256 previous, uint256 current);
+    event WithdrawInitiated(address indexed user, uint256 shares, uint256 unlockAt);
+    event WithdrawCanceled(address indexed user, uint256 shares);
+
+    // Errors
+    error PendingWithdrawalRequired();
+    error PendingWithdrawalNotMature(uint256 unlockAt);
+    error ExceedsPending(uint256 requested, uint256 pending);
+    error InsufficientUnlockedShares(uint256 available, uint256 requested);
+    error InsufficientLiquidity(uint256 available, uint256 requested);
 
     /// @param _wbtc  Address of the WBTC-like underlying (8 decimals).
     /// @param _owner Initial owner (admin).
-    constructor(address _wbtc, address _owner)
+    constructor(address _wbtc, address _owner, uint256 _initialRedemptionPeriod)
         ERC20("yWBTC Vault Share", "yWBTC")
         ERC4626(IERC20Metadata(_wbtc))
         Ownable(_owner)
@@ -75,6 +91,8 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
 
         splitA_BPS = 8500; // 85% to A, 15% to B
         rebalanceMin = 0;  // off by default until set
+
+        redemptionPeriod = _initialRedemptionPeriod;
     }
 
     function setKeeper(address keeper, bool enabled) external onlyOwner {
@@ -85,6 +103,13 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
     modifier onlyKeeperOrOwner() {
         require(isKeeper[msg.sender] || msg.sender == owner(), "not keeper/owner");
         _;
+    }
+
+    // Only the owner/deployer can change the redemption period
+    function setRedemptionPeriod(uint256 newPeriod) external onlyOwner {
+        uint256 prev = redemptionPeriod;
+        redemptionPeriod = newPeriod;
+        emit RedemptionPeriodUpdated(prev, newPeriod);
     }
 
     /// @dev OZ ERC4626 already maps share decimals to the asset's decimals.
@@ -196,6 +221,76 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
         assets = super.mint(shares, receiver);
     }
 
+
+    // Pending of shows how much is queued (shares), the unlock timestamp, and a live timeLeft countdown.
+    function pendingOf(address user)
+        public
+        view
+        returns (uint256 shares, uint256 unlockAt, uint256 timeLeft)
+    {
+        shares = pendingShares[user];
+        unlockAt = pendingUnlockAt[user];
+        timeLeft = (shares == 0 || block.timestamp >= unlockAt)
+            ? 0
+            : (unlockAt - block.timestamp);
+    }
+
+    // How many shares the user can freely transfer/redeem right now
+    function unlockedSharesOf(address user) public view returns (uint256) {
+        uint256 bal = balanceOf(user);
+        uint256 locked = pendingShares[user];
+        if (locked == 0) return bal;
+        if (block.timestamp >= pendingUnlockAt[user]) return bal; // matured → all usable
+        return bal - locked;
+    }
+
+    // Function to initiate the withdraw (redemption period starts then)
+    // Shares are now “queued” for redemption after the cooldown
+    function initiateWithdraw(uint256 shares) external whenNotPaused nonReentrant {
+        require(shares > 0, "zero shares");
+        uint256 unlocked = unlockedSharesOf(msg.sender);
+        if (unlocked < shares) revert InsufficientUnlockedShares(unlocked, shares);
+
+        // Lock the shares and (re)start/extend the timer
+        pendingShares[msg.sender] += shares;
+
+        // Extend to the later of existing unlock or now+redemptionPeriod
+        uint256 ua = block.timestamp + redemptionPeriod;
+        if (ua > pendingUnlockAt[msg.sender]) pendingUnlockAt[msg.sender] = ua;
+
+        emit WithdrawInitiated(msg.sender, shares, pendingUnlockAt[msg.sender]);
+    }
+
+    // Optional convenience to reduce/cancel a request before it matures.
+    function cancelWithdraw(uint256 shares) external nonReentrant {
+        require(shares > 0, "zero shares");
+        uint256 p = pendingShares[msg.sender];
+        if (shares > p) revert ExceedsPending(shares, p);
+        pendingShares[msg.sender] = p - shares;
+        if (pendingShares[msg.sender] == 0) pendingUnlockAt[msg.sender] = 0;
+        emit WithdrawCanceled(msg.sender, shares);
+    }
+
+    function _enforceTwoStep(address owner_, uint256 sharesToBurn) internal view {
+        // Require a matured pending request and cap by pendingShares
+        uint256 p = pendingShares[owner_];
+        if (p == 0) revert PendingWithdrawalRequired();
+
+        uint256 ua = pendingUnlockAt[owner_];
+        if (block.timestamp < ua) revert PendingWithdrawalNotMature(ua);
+
+        if (sharesToBurn > p) revert ExceedsPending(sharesToBurn, p);
+    }
+
+    function _afterBurnUpdate(address owner_, uint256 burnedShares) internal {
+        uint256 p = pendingShares[owner_];
+        if (p == 0) return; // shouldn’t happen after _enforceTwoStep
+        p -= burnedShares;
+        pendingShares[owner_] = p;
+        if (p == 0) pendingUnlockAt[owner_] = 0; // clear timer when fully consumed
+    }
+
+
     // Withdraw function
     function withdraw(uint256 assets, address receiver, address owner_)
         public
@@ -203,7 +298,16 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
         nonReentrant
         returns (uint256 shares)
     {
+        // Clamp by queue
+        uint256 sharesNeeded = previewWithdraw(assets);
+        _enforceTwoStep(owner_, sharesNeeded);
+
+        // Make sure funds are actually on hand
+        uint256 idle = idleAssets();
+        if (idle < assets) revert InsufficientLiquidity(idle, assets);
+
         shares = super.withdraw(assets, receiver, owner_);
+        _afterBurnUpdate(owner_, shares);
     }
 
     // Redeem function
@@ -213,7 +317,33 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
         nonReentrant
         returns (uint256 assets)
     {
+        _enforceTwoStep(owner_, shares);
+
+        // Estimate assets and ensure on-chain liquidity is present
+        uint256 estAssets = previewRedeem(shares);
+        uint256 idle = idleAssets();
+        if (idle < estAssets) revert InsufficientLiquidity(idle, estAssets);
+
         assets = super.redeem(shares, receiver, owner_);
+        _afterBurnUpdate(owner_, shares);
+    }
+
+    //  PREVENT BYPASS VIA SHARE TRANSFERS
+    // ===== OpenZeppelin v5.x style =====
+    // OZ v5 uses _update(from, to, value); OZ v4 uses _beforeTokenTransfer.
+    function _update(address from, address to, uint256 value) internal override {
+        // Prevent sender from transferring locked shares before they mature
+        if (from != address(0) && value > 0) {
+            uint256 locked = pendingShares[from];
+            if (locked > 0 && block.timestamp < pendingUnlockAt[from]) {
+                // balanceAfter = balanceBefore - value
+                uint256 bal = balanceOf(from);
+                if (bal - value < locked) {
+                    revert InsufficientUnlockedShares(bal - locked, value);
+                }
+            }
+        }
+        super._update(from, to, value);
     }
 
     /* ========= ERC-4626 views (limits) ========= */
@@ -246,6 +376,24 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
     function previewDeposit(uint256 assets) public view override returns (uint256) {
         if (assets < depositMin) return 0;
         return super.previewDeposit(assets);
+    }
+
+    // Return matured queued shares
+    function maxRedeem(address owner) public view override returns (uint256) {
+        uint256 p = pendingShares[owner];
+        if (p == 0) return 0;
+        if (block.timestamp < pendingUnlockAt[owner]) return 0; // not matured
+        return p;
+    }
+
+    // Return matured queued assets, clamped by idle liquidity
+    function maxWithdraw(address owner) public view override returns (uint256) {
+        uint256 sharesAvail = maxRedeem(owner);
+        if (sharesAvail == 0) return 0;
+        uint256 assetsAvail = convertToAssets(sharesAvail);
+
+        uint256 idle = idleAssets();
+        return assetsAvail > idle ? idle : assetsAvail;
     }
 
     /* ========= NAV & idle ========= */
@@ -283,4 +431,7 @@ contract Vault is ERC20, ERC4626, Ownable, Pausable, ReentrancyGuard {
 
         emit Rebalanced(amount, toA, toB);
     }
+
+
+
 }
