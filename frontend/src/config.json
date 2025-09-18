@@ -1,7 +1,7 @@
 {
   "network": "arbitrum",
   "chainId": 42161,
-  "vaultAddress": "0xd2A36dEff1190BDA77ef36E3EC38a35AD3A52912",
+  "vaultAddress": "0x7c0fe9C4dAf85fC218b38E122bBc3356A7BBA872",
   "wbtcAddress": "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
   "wbtcDecimals": 8,
   "shareSymbol": "yBTC"

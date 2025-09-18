@@ -1,94 +1,92 @@
-# Algostrats Frontend
+# Algostrats Frontend (Vite + React)
 
-A minimal, modular dApp frontend built with **Vite**.  
-It supports **multi-wallet discovery via EIP-6963**, clean React hooks for wallet + vault logic, and a lightweight card-based UI.
-
----
-
-## Features
-
-- **Vite + React** — fast HMR, tiny config, easy builds.
-- **EIP-6963 multi-wallet discovery** — detects MetaMask, Rabby, OKX, Phantom (EVM), Coinbase Wallet, Frame, etc., and lets users pick in a modal.
-- **Network reactivity** — reacts immediately to **account** and **chain** changes.
-- **Modular design**
-  - `WalletProvider.jsx` — all wallet state & events in one place.
-  - `ConnectButton.jsx` — single “Connect Wallet” button with picker modal if multiple wallets exist.
-  - `useVault.jsx` — isolated vault interactions (ERC-4626 style): balances, share price, approve → deposit, withdraw, redeem, previews, block-by-block refresh.
-  - `VaultInteractions.jsx` — small, composable UI that uses `useVault`.
-  - `ui/Card.jsx` + `App.css` — simple card layout and consistent button styles.
-- **Robust reads** — background polling **keeps last good values** and ignores transient RPC hiccups (no noisy UI errors).
-- **Config in source** — `src/config.json` (not `public/`) for addresses/decimals.
-- **Private RPC ready** — use your own endpoints via `.env` with safe public fallback.
+A minimal, modular dApp frontend for the Algostrats project. It supports **EIP‑6963 multi‑wallet discovery**, vault interactions (ERC‑4626 style), and an **Admin** panel that talks to your backend API for swaps, bridging, Drift, and Hyperliquid actions.
 
 ---
 
-## Project Structure (key files)
+## ✨ Features
+
+- **Vite + React** with fast HMR.
+- **EIP‑6963 multi‑wallet discovery** and a clean **Connect Wallet** UX.
+- **Network reactivity**: updates on account/chain changes.
+- **Vault UI**: approve → deposit / withdraw / redeem with preview reads.
+- **Admin panel** (optional): server‑side **swap**, **bridge (LI.FI)**, **Hyperliquid open/close**, and **Drift deposit/withdraw/finalize**.
+- **Lightweight UI**: card layout, buttons, collapsible outputs that auto‑hide after 6s (still toggle‑able).
+
+---
+
+## 🗂 Current `src/` contents (and what each does)
 
 ```
 src/
-  App.jsx
-  App.css
-  config.json               # chainId, vaultAddress, asset (WBTC) address, decimals, etc.
-  WalletProvider.jsx
-  ConnectButton.jsx
-  useVault.jsx              # vault hook (ERC-4626)
-  VaultInteractions.jsx
-  abis/
-    vault.json              # actual vault ABI
-  ui/
-    Card.jsx
+  abis/                    # Contract ABIs (e.g., vault.json)
+  assets/                  # Images/icons used in UI
+
+  Admin.jsx                # Admin dashboard (server actions; toggle via VITE_ENABLE_ADMIN)
+  AdminLayout.css          # Admin page styles
+
+  App.css                  # Global app styles (non-admin)
+  App.jsx                  # App shell: header, routes, Connect button, Vault card
+
+  bridgeLiFi.jsx           # Bridge card → calls backend /api/bridge/bridge-lifi
+  Card.jsx                 # Simple card component used across the UI
+  config.json              # Frontend config: chainId, addresses, decimals, symbols
+  ConnectButton.jsx        # EIP‑6963 wallet picker + connection state
+
+  driftControls.jsx        # Drift: deposit / request-withdraw / finalize (backend calls)
+  HLOpenOrder.jsx          # Hyperliquid open/close/summary (backend /api/hl-command)
+
+  index.css                # Global stylesheet imported by main.jsx
+  main.jsx                 # Vite entry → mounts <App />
+
+  swapUniswap.jsx          # Optional: client-side demo for Uniswap swap (can be hidden in prod)
+
+  UseVault.jsx             # Hook for reading/writing to ERC‑4626 vault (previewDeposit, deposit, withdraw, etc.)
+  VaultInteractions.jsx    # Vault UI card (uses UseVault + WalletProvider)
+
+  WalletProvider.jsx       # Wallet context: provider, signer, chain events, EIP‑6963 registry
 ```
 
----
-
-## Prerequisites
-
-- Node.js 18+ (recommended)
-- A browser wallet (MetaMask, Rabby, OKX, Phantom EVM, etc.)
-- RPC endpoints (private preferred)
+> If you don’t need certain features, you can delete these optional files: **Admin.jsx**, **bridgeLiFi.jsx**, **driftControls.jsx**, **HLOpenOrder.jsx**, **swapUniswap.jsx**. The rest form the core app.
 
 ---
 
-## Setup
+## 🔧 Setup
 
-1. **Install**
+1. **Install deps**
 
 ```bash
 npm install
 ```
 
 2. **Environment (.env)**
-   Create `.env` in the project root to supply your private RPCs (recommended):
 
-```bash
-# Example: Arbitrum
-VITE_RPC_ARB=https://your-private-arbitrum-endpoint.example.com/abcdef
+```ini
+# Toggle Admin route/button
+VITE_ENABLE_ADMIN=true
 
-# Optionally other chains if you enable them in WalletProvider
-VITE_RPC_ETH=https://your-private-eth-endpoint.example.com/abcdef
-VITE_RPC_BASE=https://your-private-base-endpoint.example.com/abcdef
+# Frontend → backend base URL for Admin actions
+VITE_ADMIN_API_URL=http://localhost:4000
+
+# Private RPCs (recommended)
+VITE_RPC_ARB=https://your-private-arbitrum-endpoint
 ```
 
 3. **Config (`src/config.json`)**
-
-Put chain + contract addresses here (must live in `src/`, not `public/`):
 
 ```json
 {
   "chainId": 42161,
   "vaultAddress": "0xYourVaultAddress",
-  "wbtcAddress": "0xWBTCAddressOnThisChain",
+  "wbtcAddress": "0xWBTCAddressOnArbitrum",
   "wbtcDecimals": 8,
   "shareSymbol": "yWBTC"
 }
 ```
 
-> If you must keep JSON in `public/`, fetch it at runtime (`fetch("/config.json")`).  
-> Importing from JS requires it to be under `src/`.
-
 ---
 
-## How to Run
+## ▶️ Run
 
 **Dev (HMR):**
 
@@ -102,12 +100,39 @@ npm run dev
 npm run build
 ```
 
-**Preview production build:**
+**Preview prod:**
 
 ```bash
 npm run preview
 ```
 
-Open the shown URL and click **Connect Wallet**.
+Open the shown URL. Click **Connect Wallet**, then use the **Vault** card. If `VITE_ENABLE_ADMIN=true`, an **Admin** pill/link appears in the header → navigate to server tools.
 
 ---
+
+## 🔌 Admin → Backend Endpoints (expected)
+
+- `POST /api/hl-command` — Hyperliquid open/close/summary
+- `POST /api/bridge/bridge-lifi` — LI.FI bridge
+- `POST /api/drift/get-pos-drift` — Drift snapshot
+- `POST /api/drift/deposit-drift` — Deposit to Drift vault
+- `POST /api/drift/withdraw` — Request withdraw
+- `POST /api/drift/finalize` — Finalize withdraw
+
+Configure the base via **`VITE_ADMIN_API_URL`**.
+
+---
+
+## ✅ Checklist (quick sanity)
+
+- [ ] `src/config.json` filled (chainId, addresses, decimals).
+- [ ] `src/abis/vault.json` present and matches deployed vault.
+- [ ] `.env` has `VITE_ADMIN_API_URL` (if Admin enabled).
+- [ ] Backend is running on that base URL.
+- [ ] Wallet connects and network matches `config.json.chainId`.
+
+---
+
+### License
+
+MIT (or your preference).
