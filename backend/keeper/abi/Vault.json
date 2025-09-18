@@ -2,7 +2,12 @@
   {
     "inputs": [
       { "internalType": "address", "name": "_wbtc", "type": "address" },
-      { "internalType": "address", "name": "_owner", "type": "address" }
+      { "internalType": "address", "name": "_owner", "type": "address" },
+      {
+        "internalType": "uint256",
+        "name": "_initialRedemptionPeriod",
+        "type": "uint256"
+      }
     ],
     "stateMutability": "nonpayable",
     "type": "constructor"
@@ -90,7 +95,31 @@
     "type": "error"
   },
   { "inputs": [], "name": "EnforcedPause", "type": "error" },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "requested", "type": "uint256" },
+      { "internalType": "uint256", "name": "pending", "type": "uint256" }
+    ],
+    "name": "ExceedsPending",
+    "type": "error"
+  },
   { "inputs": [], "name": "ExpectedPause", "type": "error" },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "available", "type": "uint256" },
+      { "internalType": "uint256", "name": "requested", "type": "uint256" }
+    ],
+    "name": "InsufficientLiquidity",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "available", "type": "uint256" },
+      { "internalType": "uint256", "name": "requested", "type": "uint256" }
+    ],
+    "name": "InsufficientUnlockedShares",
+    "type": "error"
+  },
   {
     "inputs": [
       { "internalType": "address", "name": "owner", "type": "address" }
@@ -105,6 +134,14 @@
     "name": "OwnableUnauthorizedAccount",
     "type": "error"
   },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "unlockAt", "type": "uint256" }
+    ],
+    "name": "PendingWithdrawalNotMature",
+    "type": "error"
+  },
+  { "inputs": [], "name": "PendingWithdrawalRequired", "type": "error" },
   { "inputs": [], "name": "ReentrancyGuardReentrantCall", "type": "error" },
   {
     "inputs": [
@@ -357,6 +394,25 @@
     "anonymous": false,
     "inputs": [
       {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "previous",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "current",
+        "type": "uint256"
+      }
+    ],
+    "name": "RedemptionPeriodUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
         "indexed": true,
         "internalType": "address",
         "name": "token",
@@ -467,6 +523,50 @@
     "type": "event"
   },
   {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "shares",
+        "type": "uint256"
+      }
+    ],
+    "name": "WithdrawCanceled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "shares",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "unlockAt",
+        "type": "uint256"
+      }
+    ],
+    "name": "WithdrawInitiated",
+    "type": "event"
+  },
+  {
     "inputs": [{ "internalType": "int256", "name": "delta", "type": "int256" }],
     "name": "adjustExternalNav",
     "outputs": [],
@@ -507,6 +607,15 @@
     "name": "balanceOf",
     "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "shares", "type": "uint256" }
+    ],
+    "name": "cancelWithdraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -572,6 +681,15 @@
     "name": "idleAssets",
     "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "shares", "type": "uint256" }
+    ],
+    "name": "initiateWithdraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -654,6 +772,33 @@
     "inputs": [],
     "name": "paused",
     "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "user", "type": "address" }
+    ],
+    "name": "pendingOf",
+    "outputs": [
+      { "internalType": "uint256", "name": "shares", "type": "uint256" },
+      { "internalType": "uint256", "name": "unlockAt", "type": "uint256" },
+      { "internalType": "uint256", "name": "timeLeft", "type": "uint256" }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "address", "name": "", "type": "address" }],
+    "name": "pendingShares",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "address", "name": "", "type": "address" }],
+    "name": "pendingUnlockAt",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
     "stateMutability": "view",
     "type": "function"
   },
@@ -745,6 +890,13 @@
   },
   {
     "inputs": [],
+    "name": "redemptionPeriod",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "renounceOwnership",
     "outputs": [],
     "stateMutability": "nonpayable",
@@ -819,6 +971,15 @@
   },
   {
     "inputs": [
+      { "internalType": "uint256", "name": "newPeriod", "type": "uint256" }
+    ],
+    "name": "setRedemptionPeriod",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
       { "internalType": "uint16", "name": "_splitA_BPS", "type": "uint16" }
     ],
     "name": "setSplitBPS",
@@ -882,6 +1043,15 @@
     "name": "transferOwnership",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "user", "type": "address" }
+    ],
+    "name": "unlockedSharesOf",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
     "type": "function"
   },
   {
