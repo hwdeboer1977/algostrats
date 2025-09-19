@@ -43,6 +43,7 @@ export function useVault({
     userAsset: null, // user's WBTC
     userShares: null, // user's yBTC
     vaultTotalAssets: null, // totalAssets()
+    vaultIdleAssets: null, // idleAssets()
   });
 
   // Share price state
@@ -93,12 +94,19 @@ export function useVault({
   async function refresh() {
     if (!provider || !vault || !asset || !address) return;
     try {
-      const [userAsset, userShares, totalAssets] = await Promise.all([
-        asset.balanceOf(address),
-        vault.balanceOf(address),
-        vault.totalAssets(),
-      ]);
-      setBalances({ userAsset, userShares, vaultTotalAssets: totalAssets });
+      const [userAsset, userShares, totalAssets, idleAssets] =
+        await Promise.all([
+          asset.balanceOf(address),
+          vault.balanceOf(address),
+          vault.totalAssets(),
+          vault.idleAssets(),
+        ]);
+      setBalances({
+        userAsset,
+        userShares,
+        vaultTotalAssets: totalAssets,
+        vaultIdleAssets: idleAssets,
+      });
     } catch (e) {
       // transient read failure: don't surface to UI
       console.debug("[refresh] read failed:", e?.message || e);
@@ -241,6 +249,30 @@ export function useVault({
     }
   }
 
+  async function initWithdraw(amountStr) {
+    if (!signer) throw new Error("Connect wallet first");
+    setLoading(true);
+    setError("");
+    try {
+      const assets = parseAsset(amountStr);
+      // guard: must burn at least 1 share-wei
+      const sharesBurn = await vault.previewWithdraw(assets);
+      if (sharesBurn === 0n) {
+        throw new Error(
+          `Amount too small to withdraw (rounds to zero shares). Try a larger amount.`
+        );
+      }
+      const tx = await vault.connect(signer).initiateWithdraw(assets);
+      await tx.wait();
+      await Promise.all([refresh(), refreshPrices()]);
+    } catch (e) {
+      setError(e?.message ?? "Withdraw failed");
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function withdrawAssets(amountStr) {
     if (!signer) throw new Error("Connect wallet first");
     setLoading(true);
@@ -300,6 +332,7 @@ export function useVault({
     onWrongNetwork,
     assetMeta,
     shareMeta,
+    vaultAddress,
 
     // state
     loading,
@@ -309,6 +342,7 @@ export function useVault({
       userAsset: formatAsset(balances.userAsset),
       userShares: formatShares(balances.userShares),
       vaultTotalAssets: formatAsset(balances.vaultTotalAssets),
+      vaultIdleAssets: formatAsset(balances.vaultIdleAssets),
     },
 
     // share price
@@ -316,6 +350,7 @@ export function useVault({
 
     // ops
     depositAssets,
+    initWithdraw,
     withdrawAssets,
     redeemShares,
 

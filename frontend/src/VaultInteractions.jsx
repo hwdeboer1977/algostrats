@@ -3,10 +3,12 @@ import React, { useState } from "react";
 import { ethers } from "ethers";
 import { useWallet } from "./WalletProvider";
 import { useVault } from "./UseVault";
+import VaultWithdrawalInfo from "./VaultWithdrawalInfo";
 
 export default function VaultInteractions() {
   const { connected, chain, address } = useWallet();
   const v = useVault();
+  const vaultAddress = v.vaultAddress;
 
   // string input in asset units (e.g., "0.001")
   const [amount, setAmount] = useState("");
@@ -33,7 +35,10 @@ export default function VaultInteractions() {
         Vault total assets: {v.formatted.vaultTotalAssets ?? "…"}{" "}
         {v.assetMeta.symbol}
       </p>
-
+      <p className="muted">
+        Vault idle assets: {v.formatted.vaultIdleAssets ?? "…"}{" "}
+        {v.assetMeta.symbol}
+      </p>
       {connected && (
         <>
           <div className="wallet-row">
@@ -95,6 +100,14 @@ export default function VaultInteractions() {
         <button
           className="btn btn-secondary"
           disabled={!connected || v.loading}
+          onClick={() => v.initWithdraw(amount)}
+        >
+          Initiate withdraw
+        </button>
+
+        <button
+          className="btn btn-secondary"
+          disabled={!connected || v.loading}
           onClick={() => v.withdrawAssets(amount)}
         >
           Withdraw (assets)
@@ -107,6 +120,14 @@ export default function VaultInteractions() {
         >
           Redeem (shares)
         </button>
+
+        <div className="p-6">
+          <VaultWithdrawalInfo
+            vaultAddress={vaultAddress}
+            account={address} // ⚠️ pass your connected wallet address here
+            //rpcUrl={import.meta.env.VITE_RPC_URL} // optional: custom read-only RPC
+          />
+        </div>
       </div>
 
       {/* Error */}
