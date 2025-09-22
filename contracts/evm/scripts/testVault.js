@@ -103,20 +103,85 @@ async function main() {
   const assetsFromPending = await vaultContract.previewRedeem(pShares);
 
   console.log("shareDec:", Number(shareDec), "assetDec:", Number(assetDec));
+  // Pending shares are queued for withdrawal.
+  // They are MATURED only if timeLeft === 0; otherwise still in cooldown.
   console.log("pendingShares:", pShares.toString(), "timeLeft:", tl.toString());
+
+  // Share price = totalAssets / totalSupply (scaled to 1e8 because 8 decimals)
+  const DEC = 10n ** 8n;
+  const taBN = BigInt(ta);
+  const tsBN = BigInt(ts);
+  const priceScaled = tsBN === 0n ? DEC : (taBN * DEC) / tsBN;
+  console.log("share price (scaled 1e8):", priceScaled.toString());
+  console.log("share price (human):", ethers.formatUnits(priceScaled, 8)); // e.g. "1.20005092"
+
+  // previewRedeem(pendingShares) ≈ pendingShares * sharePrice (floor-rounded by ERC-4626).
+  // Note: previewRedeem ignores liquidity; actual redeem still requires idleAssets ≥ this amount.
   console.log(
     "previewRedeem(pendingShares):",
     ethers.formatUnits(assetsFromPending, assetDec)
   );
+
+  // IdleAssets = WBTC currently in the vault contract (immediately withdrawable pool)
   console.log("idleAssets():", ethers.formatUnits(idle, assetDec));
+
+  // maxRedeem(owner) = matured queued shares (== pendingShares if timeLeft === 0; else 0)
   console.log("maxRedeem(owner):", maxR.toString());
+
+  // maxWithdraw(owner) = min( convertToAssets(maxRedeem(owner)), idleAssets() )
   console.log("maxWithdraw(owner):", ethers.formatUnits(maxW, assetDec));
-  console.log(
-    "totalAssets:",
-    ethers.formatUnits(ta, assetDec),
-    "totalSupply:",
-    ts.toString()
+
+  // totalAssets = on-contract WBTC + externalNav (off-contract NAV)  [WBTC-equivalent]
+  // totalSupply = total yWBTC shares outstanding
+  console.log("totalAssets:", ta.toString(), "totalSupply:", ts.toString());
+
+  // --- Chainlink BTC/USD for USDC conversion (ONE copy, above handlers) ---
+  const chainlinkAbi = [
+    "function latestRoundData() view returns (uint80, int256, uint256, uint256, uint80)",
+    "function decimals() view returns (uint8)",
+  ];
+
+  const CHAINLINK_BTC_USD = process.env.CHAINLINK_BTC_USD;
+  if (!CHAINLINK_BTC_USD) throw new Error("Missing CHAINLINK_BTC_USD in .env");
+
+  const priceFeed = new ethers.Contract(
+    CHAINLINK_BTC_USD,
+    chainlinkAbi,
+    provider
   );
+
+  const [, answer] = await priceFeed.latestRoundData();
+  const pxDec = Number(await priceFeed.decimals());
+  if (answer <= 0) throw new Error("Chainlink BTC/USD invalid");
+
+  const priceBTC = Number(answer) / 10 ** pxDec;
+  console.log("Price BTC: ", priceBTC);
+
+  // shares -> WBTC owed
+  // Suppose a users wants to withdraw 10000 shares
+  const sharesToWithdraw = 10000;
+  const owed = await vaultContract.previewRedeem(sharesToWithdraw); // WBTC raw
+  console.log("Owed wBTC: ", owed.toString());
+  const shortfall = owed > idle ? owed - idle : 0n;
+
+  console.log("Shortfall in wBTC: ", shortfall.toString());
+
+  // shortfall is in 1e8 units (sat of WBTC)
+  // clamp to zero for UI (optional)
+  const shortfallClamped = shortfall > 0n ? shortfall : 0n;
+
+  const shortfallHuman = ethers.formatUnits(shortfallClamped, assetDec);
+
+  console.log("Shortfall raw (1e-8 units):", shortfallClamped.toString());
+  console.log("Shortfall in WBTC (human):", shortfallHuman);
+
+  const shortInUSD = shortfallHuman * priceBTC;
+  console.log("Shortfall in USDC: ", shortInUSD);
+
+
+  // if shortInUSD {
+  //   call functionToClose 
+  // }
 
   // Cancel withdraw
   //tx = await vaultContract.connect(signer).cancelWithdraw(shares);
@@ -128,9 +193,9 @@ async function main() {
   //const tx2 = await vaultContract.connect(signer).initiateWithdraw(2);
 
   // Before maturity: maxWithdraw/maxRedeem should be 0
-  const maxWithdraw = await vaultContract.maxWithdraw(WALLET);
-  const maxRedeem = await vaultContract.maxRedeem(WALLET);
-  console.log("MaxWithdraw:", maxWithdraw);
+  // const maxWithdraw = await vaultContract.maxWithdraw(WALLET);
+  // const maxRedeem = await vaultContract.maxRedeem(WALLET);
+  // console.log("MaxWithdraw:", maxWithdraw);
 
   // const wTx = await vaultContract.withdraw(maxWithdraw, WALLET, WALLET);
   // await wTx.wait();
