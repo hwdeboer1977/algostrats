@@ -1,4 +1,5 @@
 // backend/keeper/index.js
+/* eslint-disable no-console */
 const fs = require("fs");
 const path = require("path");
 const { ethers } = require("ethers");
@@ -6,16 +7,14 @@ const { runPython } = require("./python_runner.js");
 const { pathToFileURL } = require("url");
 require("dotenv").config({ path: path.join(__dirname, "../../.env") });
 const { spawn } = require("child_process");
-const { Connection, PublicKey } = require("@solana/web3.js");
-const { getAssociatedTokenAddressSync } = require("@solana/spl-token");
+const { createEventPoller } = require("./eventPoller");
 
 // Logging (separate file for keeper)
 const { makeLogger } = require("./logger");
 const logger = makeLogger("keeper");
 
-// Import these scripts (keeps code modular)
+// Import modular scripts
 const { buildCheckAndMaybeRebalance } = require("./rebalance");
-const { createDepositPoller } = require("./depositPoller");
 const { buildDepositPipeline } = require("./depositPipeline");
 
 // ===== ENV =====
@@ -44,6 +43,10 @@ if (!RPC_URL)
   throw new Error("Missing RPC_URL (ARBITRUM_ALCHEMY_MAINNET) in .env");
 if (!VAULT_ADDRESS) throw new Error("Missing VAULT_ADDRESS in .env");
 if (!KEEPER_PRIVATE_KEY) throw new Error("Missing KEEPER_PRIVATE_KEY in .env");
+if (!process.env.WBTC_ADDRESS) throw new Error("Missing WBTC_ADDRESS in .env");
+if (!process.env.USDC_ADDRESS) throw new Error("Missing USDC_ADDRESS in .env");
+if (!process.env.CHAINLINK_BTC_USD)
+  throw new Error("Missing CHAINLINK_BTC_USD in .env");
 
 // Load Vault ABI (JSON array)
 const vaultAbiFile = path.join(__dirname, "./abi/Vault.json");
@@ -76,10 +79,8 @@ const wallet = new ethers.Wallet(KEEPER_PRIVATE_KEY, provider);
 const vault = new ethers.Contract(VAULT_ADDRESS, vaultAbi, provider);
 const vaultWithSigner = vault.connect(wallet);
 
-// WBTC contract
+// WBTC & USDC contracts
 const wbtc = new ethers.Contract(process.env.WBTC_ADDRESS, erc20Abi, provider);
-
-// USDC contract
 const usdc = new ethers.Contract(process.env.USDC_ADDRESS, erc20Abi, provider);
 
 // ============ Helpers ============
@@ -98,6 +99,56 @@ async function waitFinal(txHash, label) {
   }
 }
 
+// --- Chainlink BTC/USD for USDC conversion (ONE copy, above handlers) ---
+const chainlinkAbi = [
+  "function latestRoundData() view returns (uint80, int256, uint256, uint256, uint80)",
+  "function decimals() view returns (uint8)",
+];
+
+const CHAINLINK_BTC_USD = process.env.CHAINLINK_BTC_USD;
+if (!CHAINLINK_BTC_USD) throw new Error("Missing CHAINLINK_BTC_USD in .env");
+
+const priceFeed = new ethers.Contract(
+  CHAINLINK_BTC_USD,
+  chainlinkAbi,
+  provider
+);
+
+const USDC_DEC = 6;
+// WBTC has 8; your Vault overrides decimals() to asset decimals, but shortfall math is in asset units anyway.
+const ASSET_DEC = 8;
+
+function pow10(n) {
+  return 10n ** BigInt(n);
+}
+
+async function getBtcUsd() {
+  const [, answer] = await priceFeed.latestRoundData();
+  const pxDec = Number(await priceFeed.decimals());
+  if (answer <= 0) throw new Error("Chainlink BTC/USD invalid");
+  return { pxRaw: BigInt(answer), pxDec };
+}
+
+// HOISTED function declaration (not const/arrow) so handlers can call it even if defined below them in the file.
+async function computeShortfallAndUsdc(shares) {
+  // shares -> WBTC owed
+  const owed = await vault.previewRedeem(shares); // WBTC raw
+  const idle = await vault.idleAssets(); // WBTC raw
+  const shortfall = owed > idle ? owed - idle : 0n;
+  if (shortfall === 0n) return { shortfall, usdcRaw: 0n };
+
+  const { pxRaw, pxDec } = await getBtcUsd();
+  // USDC raw = shortfall * BTCUSD * 10^USDC / (10^ASSET * 10^pxDec)
+  let usdcRaw =
+    (shortfall * pxRaw * pow10(USDC_DEC)) / (pow10(ASSET_DEC) * pow10(pxDec));
+
+  // buffer (e.g. +2%)
+  const bufferBps = Number(process.env.BUFFER_BPS || 102);
+  usdcRaw = (usdcRaw * BigInt(bufferBps)) / 100n;
+
+  return { shortfall, usdcRaw };
+}
+
 // Call modular script to check whether keeper should rebalance ----
 const checkAndMaybeRebalance = buildCheckAndMaybeRebalance({
   provider,
@@ -106,7 +157,7 @@ const checkAndMaybeRebalance = buildCheckAndMaybeRebalance({
   vaultAddress: VAULT_ADDRESS,
   erc20Abi,
   wbtcEnvAddress: process.env.WBTC_ADDRESS || null,
-  logger, // pass logger down if your module accepts it
+  logger,
 });
 
 // Debounce wrapper remains local
@@ -123,7 +174,7 @@ function scheduleRebalanceCheck(reason = "deposit") {
   logger.info("rebalance.scheduled", { reason, in_ms: REBALANCE_DEBOUNCE_MS });
 }
 
-// Hyperliquid runner (kept as-is)
+// Optional: Hyperliquid runner
 let pyBusy = false;
 async function runHL(action, kvArgs) {
   if (pyBusy) {
@@ -142,7 +193,7 @@ async function runHL(action, kvArgs) {
   }
 }
 
-// Drift snapshot (kept as-is)
+// Optional: Drift snapshot
 async function fetchDriftSnapshot() {
   const mjsPath = path.resolve(
     __dirname,
@@ -159,7 +210,7 @@ async function fetchDriftSnapshot() {
   return mod.getDriftSnapshot();
 }
 
-// Optional monitors (unchanged)
+// Optional monitors
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let seqMonitorRunning = false;
 let stopSequentialMonitor = false;
@@ -205,6 +256,7 @@ async function startSequentialMonitor() {
   logger.info("monitor.stopped");
 }
 
+// ===== Deposit pipeline (unchanged) =====
 const depositPipeline = buildDepositPipeline({
   wbtc,
   usdc,
@@ -228,9 +280,10 @@ const depositPipeline = buildDepositPipeline({
       "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   },
   provider,
-  logger, // let the pipeline log to keeper log as well
+  logger,
 });
 
+// Small deposit queue
 const processedDeposits = new Set();
 const pipelineQueue = [];
 let pipelineBusy = false;
@@ -272,39 +325,141 @@ async function processQueue() {
   pipelineBusy = false;
 }
 
-// Event listener for deposits into smart contract ----
-const poller = createDepositPoller({
-  provider,
-  vault,
-  vaultAddress: VAULT_ADDRESS,
-  confirmations: CONFIRMATIONS,
-  eventPollMs: EVENT_POLL_MS,
-  reorgBuffer: REORG_BUFFER,
-  startBlock: START_BLOCK,
-  onDeposit: async ({ args, log }) => {
-    const [caller, owner, assets, shares] = args;
-    logger.info("deposit.detected", {
-      txHash: log.transactionHash,
-      caller,
-      owner,
-      assets: assets?.toString?.() ?? String(assets),
-      shares: shares?.toString?.() ?? String(shares),
-    });
+// ===== Withdraw queue (spawns withdrawPipeline.js) =====
+const processedWithdraws = new Set();
+const withdrawQueue = [];
+let withdrawBusy = false;
 
-    // Step 1: Rebalance initiated
-    await waitFinal(log.transactionHash, "Deposit");
-    scheduleRebalanceCheck("deposit");
+function enqueueWithdraw(job) {
+  if (processedWithdraws.has(job.txHash)) {
+    logger.info("withdraw.skip_duplicate", { txHash: job.txHash });
+    return;
+  }
+  processedWithdraws.add(job.txHash);
+  withdrawQueue.push(job);
+  logger.info("withdraw.enqueue", {
+    txHash: job.txHash,
+    user: job.user,
+    shares: job.shares?.toString?.() ?? String(job.shares),
+    usdc: job.usdcHuman,
+    queued: withdrawQueue.length,
+  });
+  if (!withdrawBusy) processWithdrawQueue();
+}
 
-    // Step 2+: enqueue pipeline (swap/bridge/HL/Drift)
-    enqueuePipeline({
-      txHash: log.transactionHash,
-      caller,
-      owner,
-      assets,
-      shares,
-    });
+async function processWithdrawQueue() {
+  withdrawBusy = true;
+  while (withdrawQueue.length) {
+    const job = withdrawQueue.shift();
+    const t0 = Date.now();
+    try {
+      logger.info("withdraw.pipeline.start", { txHash: job.txHash });
+
+      // spawn your existing withdrawPipeline.js with --stage=init --usdc=<X>
+      const script = path.resolve(__dirname, "./withdrawPipeline.js");
+      const args = [script, "--stage=init", `--usdc=${job.usdcHuman}`];
+
+      await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, args, {
+          cwd: path.dirname(script),
+          stdio: "inherit",
+          env: { ...process.env },
+        });
+        child.once("error", reject);
+        child.once("exit", (code) =>
+          code === 0
+            ? resolve()
+            : reject(new Error(`withdrawPipeline exited ${code}`))
+        );
+      });
+
+      logger.info("withdraw.pipeline.done", {
+        txHash: job.txHash,
+        ms: Date.now() - t0,
+      });
+    } catch (e) {
+      logger.error("withdraw.pipeline.error", {
+        txHash: job.txHash,
+        error: e.message || String(e),
+      });
+    }
+  }
+  withdrawBusy = false;
+}
+
+// ===== Unified event handlers =====
+
+// --- Deposit (ERC-4626) ---
+async function onDeposit({ args, log }) {
+  const [caller, owner, assets, shares] = args;
+  logger.info("deposit.detected", {
+    txHash: log.transactionHash,
+    caller,
+    owner,
+    assets: assets?.toString?.() ?? String(assets),
+    shares: shares?.toString?.() ?? String(shares),
+  });
+
+  await waitFinal(log.transactionHash, "Deposit");
+  scheduleRebalanceCheck("deposit");
+
+  enqueuePipeline({
+    txHash: log.transactionHash,
+    caller,
+    owner,
+    assets,
+    shares,
+  });
+}
+
+// --- Withdraw initiated (custom event) ---
+async function onWithdrawInitiated({ args, log }) {
+  const [user, shares, unlockAt] = args;
+  logger.info("withdraw.initiated.detected", {
+    txHash: log.transactionHash,
+    user,
+    shares: shares?.toString?.() ?? String(shares),
+    unlockAt: Number(unlockAt),
+  });
+
+  await waitFinal(log.transactionHash, "WithdrawInitiated");
+
+  const { shortfall, usdcRaw } = await computeShortfallAndUsdc(shares);
+  const usdcHuman = ethers.formatUnits(usdcRaw, USDC_DEC);
+
+  logger.info("withdraw.shortfall", {
+    wbtcShortfall: ethers.formatUnits(shortfall, ASSET_DEC),
+    usdcNeeded: usdcHuman,
+  });
+
+  const minUsdc = Number(process.env.MIN_USDC || 0);
+  if (Number(usdcHuman) < minUsdc) {
+    logger.info("withdraw.skip_min", { usdcHuman, minUsdc });
+    return;
+  }
+
+  enqueueWithdraw({
+    txHash: log.transactionHash,
+    user,
+    shares,
+    unlockAt,
+    usdcHuman,
+  });
+}
+
+// Events config for unified poller
+const events = [
+  {
+    name: "Deposit",
+    signature: "Deposit(address,address,uint256,uint256)",
+    handler: onDeposit,
   },
-});
+  {
+    name: "WithdrawInitiated",
+    signature: "WithdrawInitiated(address,uint256,uint256)",
+    handler: onWithdrawInitiated,
+  },
+];
 
 // ===== Main =====
 async function main() {
@@ -315,6 +470,18 @@ async function main() {
   });
   logger.info("keeper.signer", { address: await wallet.getAddress() });
 
+  const poller = createEventPoller({
+    provider,
+    contract: vault,
+    address: VAULT_ADDRESS,
+    events,
+    confirmations: CONFIRMATIONS,
+    eventPollMs: EVENT_POLL_MS,
+    reorgBuffer: REORG_BUFFER,
+    startBlock: START_BLOCK, // or `(await provider.getBlockNumber()) - 2000` for backfill
+    logger,
+  });
+
   await poller.start();
   logger.info("poller.started", {
     eventPollMs: EVENT_POLL_MS,
@@ -323,7 +490,7 @@ async function main() {
   });
 
   process.on("SIGINT", () => {
-    logger.warn("sigint.received", { msg: "stopping deposit poller…" });
+    logger.warn("sigint.received", { msg: "stopping unified poller…" });
     try {
       poller.stop();
     } catch (e) {
@@ -336,7 +503,7 @@ async function main() {
   // await startSequentialMonitor();
 
   logger.info("keeper.ready", {
-    msg: "Listening for Vault deposits via modular HTTP poller…",
+    msg: "Listening for Vault deposits & withdrawals via unified poller…",
   });
 }
 
