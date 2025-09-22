@@ -1,10 +1,10 @@
 const path = require("path");
-// Load env two levels up (adjust if needed)
+// Load environment variables from .env file two levels up
 require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
 
 const { ethers } = require("ethers");
 
-// LI.FI SDK
+// Import LI.FI SDK components
 const {
   createConfig: createLifiConfig,
   EVM,
@@ -14,13 +14,14 @@ const {
   executeRoute,
 } = require("@lifi/sdk");
 
-// viem for EVM signer
+// Import viem for EVM chain interactions
 const { createWalletClient, http, defineChain } = require("viem");
 const { privateKeyToAccount } = require("viem/accounts");
 
-// ------------------------------
-// Solana -> Arbitrum (USDC)
-// ------------------------------
+// ---------------------------------------------------------
+// Example: Bridge USDC between Arbitrum ↔ Solana using LI.FI
+// Direction: Arbitrum -> Solana
+// ---------------------------------------------------------
 
 // --- EVM (Arbitrum) signer ---
 const arbitrum = defineChain({
@@ -30,15 +31,10 @@ const arbitrum = defineChain({
   rpcUrls: { default: { http: [process.env.ARBITRUM_ALCHEMY_MAINNET] } },
 });
 
-// Prefer PK_RECIPIENT_A for parity with your other script; fallback to WALLET_SECRET
-const evmPk = process.env.PK_RECIPIENT_A || process.env.WALLET_SECRET;
-if (!evmPk) {
-  console.error(
-    "Missing PK for Arbitrum signer (set PK_RECIPIENT_A or WALLET_SECRET)."
-  );
-  process.exit(1);
-}
-const evmAccount = privateKeyToAccount(evmPk);
+// Create an EVM account object from private key
+const evmAccount = privateKeyToAccount(process.env.WALLET_SECRET);
+
+// Create a wallet client for EVM
 let evmClient = createWalletClient({
   account: evmAccount,
   chain: arbitrum,
@@ -46,21 +42,15 @@ let evmClient = createWalletClient({
 });
 
 // --- Solana signer (backend only) ---
-if (!process.env.WALLET_SOLANA_SECRET) {
-  console.error(
-    "Missing WALLET_SOLANA_SECRET (base58-encoded Solana secret key)."
-  );
-  process.exit(1);
-}
 const solAdapter = new KeypairWalletAdapter(process.env.WALLET_SOLANA_SECRET);
 
-// --- Configure LI.FI with both providers ---
+// --- Configure LI.FI SDK with both providers ---
 createLifiConfig({
   integrator: "BlockstatNodeJS",
   providers: [
     EVM({
       getWalletClient: async () => evmClient,
-      switchChain: async () => evmClient, // only Arbitrum in this flow
+      switchChain: async () => evmClient, // only Arbitrum needed for this flow
     }),
     Solana({
       getWalletAdapter: async () => solAdapter,
@@ -69,32 +59,19 @@ createLifiConfig({
 });
 
 async function main() {
-  // CLI: node bridge_sol_to_arb.js <amountUSDC>
+  // CLI: node bridge_arb_to_sol.js <amountUSDC>
   const humanAmount = process.argv[2] ?? "5";
   // USDC = 6 decimals on both chains
   const fromAmount = ethers.parseUnits(humanAmount, 6).toString();
 
-  const solFrom = process.env.SOLANA_PUBKEY; // your Solana public key (from-address)
-  if (!solFrom) {
-    console.error("Missing SOLANA_PUBKEY (Solana fromAddress).");
-    process.exit(1);
-  }
-  const arbTo = evmAccount.address; // Arbitrum destination
-
-  console.log("Bridging USDC Solana → Arbitrum");
-  console.log("  amount (human):", humanAmount);
-  console.log("  amount (base) :", fromAmount);
-  console.log("  from (SOL)    :", solFrom);
-  console.log("  to (ARB)      :", arbTo);
-
   const params = {
-    fromChainId: 1151111081099710, // Solana (LI.FI chain id)
-    toChainId: 42161, // Arbitrum One
-    fromTokenAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC (Solana mint)
-    toTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // USDC (Arbitrum)
-    fromAmount,
-    fromAddress: solFrom,
-    toAddress: arbTo,
+    fromChainId: 42161, // Arbitrum
+    toChainId: 1151111081099710, // Solana (LI.FI chain id)
+    fromTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // USDC (ARB)
+    toTokenAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC (SOL)
+    fromAmount: fromAmount, // USDC (6 dp)
+    fromAddress: evmAccount.address,
+    toAddress: process.env.SOLANA_PUBKEY,
   };
 
   const { routes } = await getRoutes(params);
@@ -104,17 +81,17 @@ async function main() {
   console.log(`Selected route with ${route.steps.length} step(s)`);
 
   const executed = await executeRoute(route, {
-    // auto-accept small exchange-rate changes (<= 0.5% worse)
     acceptExchangeRateUpdateHook: async (_toToken, oldAmt, newAmt) => {
       const o = BigInt(oldAmt),
         n = BigInt(newAmt);
-      return (o - n) * 1000n <= o * 5n;
+      return (o - n) * 1000n <= o * 5n; // auto-accept <= 0.5% worse
     },
     updateRouteHook(updated) {
       updated.steps?.forEach((s, i) =>
-        s.execution?.process?.forEach((p) => {
-          if (p.txHash) console.log(`Step ${i + 1} ${p.type} → ${p.txHash}`);
-        })
+        s.execution?.process?.forEach(
+          (p) =>
+            p.txHash && console.log(`Step ${i + 1} ${p.type} → ${p.txHash}`)
+        )
       );
     },
   });
@@ -126,6 +103,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("❌ Bridge error:", err?.stack || err?.message || err);
+  console.error(err);
   process.exit(1);
 });
