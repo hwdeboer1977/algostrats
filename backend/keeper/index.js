@@ -14,7 +14,7 @@ const { makeLogger } = require("./logger");
 const logger = makeLogger("keeper");
 
 // Import modular scripts
-const { buildCheckAndMaybeRebalance } = require("./rebalance");
+//const { buildCheckAndMaybeRebalance } = require("./rebalance");
 const { buildDepositPipeline } = require("./depositPipeline");
 
 // ===== ENV =====
@@ -22,9 +22,6 @@ const RPC_URL = process.env.ARBITRUM_ALCHEMY_MAINNET;
 const CONFIRMATIONS = Number(process.env.CONFIRMATIONS || 1);
 const VAULT_ADDRESS = process.env.VAULT_ADDRESS;
 const KEEPER_PRIVATE_KEY = process.env.KEEPER_MAINNET_PRIVATE_KEY;
-const REBALANCE_DEBOUNCE_MS = Number(
-  process.env.REBALANCE_DEBOUNCE_MS || 30_000
-);
 
 // Poller config
 const EVENT_POLL_MS = Number(process.env.EVENT_POLL_MS || 4000);
@@ -34,9 +31,6 @@ const REORG_BUFFER = Number(
 const START_BLOCK = process.env.START_BLOCK
   ? Number(process.env.START_BLOCK)
   : null;
-
-// Other config
-const MONITOR_INTERVAL_MS = Number(process.env.MONITOR_INTERVAL_MS || 60_000);
 
 // Sanity checks
 if (!RPC_URL)
@@ -147,113 +141,6 @@ async function computeShortfallAndUsdc(shares) {
   usdcRaw = (usdcRaw * BigInt(bufferBps)) / 100n;
 
   return { shortfall, usdcRaw };
-}
-
-// Call modular script to check whether keeper should rebalance ----
-const checkAndMaybeRebalance = buildCheckAndMaybeRebalance({
-  provider,
-  vault,
-  vaultWithSigner,
-  vaultAddress: VAULT_ADDRESS,
-  erc20Abi,
-  wbtcEnvAddress: process.env.WBTC_ADDRESS || null,
-  logger,
-});
-
-// Debounce wrapper remains local
-let rebalanceTimer = null;
-function scheduleRebalanceCheck(reason = "deposit") {
-  if (rebalanceTimer) clearTimeout(rebalanceTimer);
-  rebalanceTimer = setTimeout(() => {
-    rebalanceTimer = null;
-    logger.info("rebalance.trigger", { reason });
-    checkAndMaybeRebalance().catch((e) =>
-      logger.error("rebalance.error", { error: e.message || String(e) })
-    );
-  }, REBALANCE_DEBOUNCE_MS);
-  logger.info("rebalance.scheduled", { reason, in_ms: REBALANCE_DEBOUNCE_MS });
-}
-
-// Optional: Hyperliquid runner
-let pyBusy = false;
-async function runHL(action, kvArgs) {
-  if (pyBusy) {
-    logger.warn("hl.skip_busy", { action });
-    return;
-  }
-  pyBusy = true;
-  try {
-    const res = await runPython(action, kvArgs);
-    logger.info("hl.ok", { action, result: res });
-    return res;
-  } catch (e) {
-    logger.error("hl.error", { action, error: e.message });
-  } finally {
-    pyBusy = false;
-  }
-}
-
-// Optional: Drift snapshot
-async function fetchDriftSnapshot() {
-  const mjsPath = path.resolve(
-    __dirname,
-    "../../tools/drift/read_position_info.mjs"
-  );
-  const fileUrl = pathToFileURL(mjsPath).href;
-
-  const mod = await import(fileUrl);
-  if (typeof mod.getDriftSnapshot !== "function") {
-    throw new Error(
-      "getDriftSnapshot() not exported from read_position_info.mjs"
-    );
-  }
-  return mod.getDriftSnapshot();
-}
-
-// Optional monitors
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let seqMonitorRunning = false;
-let stopSequentialMonitor = false;
-const last = { hl: null, drift: null };
-
-async function monitorHLThenDriftOnce() {
-  try {
-    const hl = await runHL("summary");
-    last.hl = hl;
-    logger.info("monitor.hl", {
-      openPositions: hl?.openPositions?.length ?? 0,
-    });
-  } catch (e) {
-    logger.error("monitor.hl.error", { error: e.message });
-  }
-
-  try {
-    const drift = await fetchDriftSnapshot();
-    last.drift = drift;
-    logger.info("monitor.drift", {
-      equity: drift?.fmt?.balance ?? "?",
-      roiPct: drift?.roiPct ?? null,
-    });
-  } catch (e) {
-    logger.error("monitor.drift.error", { error: e.message });
-  }
-}
-
-async function startSequentialMonitor() {
-  if (seqMonitorRunning) return;
-  seqMonitorRunning = true;
-  logger.info("monitor.start", { interval_ms: MONITOR_INTERVAL_MS });
-
-  while (!stopSequentialMonitor) {
-    const t0 = Date.now();
-    await monitorHLThenDriftOnce(); // always HL first, then Drift
-    const elapsed = Date.now() - t0;
-    const wait = Math.max(0, MONITOR_INTERVAL_MS - elapsed);
-    await sleep(wait);
-  }
-
-  seqMonitorRunning = false;
-  logger.info("monitor.stopped");
 }
 
 // ===== Deposit pipeline (unchanged) =====

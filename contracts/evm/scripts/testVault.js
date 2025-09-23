@@ -178,13 +178,12 @@ async function main() {
   const shortInUSD = shortfallHuman * priceBTC;
   console.log("Shortfall in USDC: ", shortInUSD);
 
-
   // if shortInUSD {
-  //   call functionToClose 
+  //   call functionToClose
   // }
 
   // Cancel withdraw
-  //tx = await vaultContract.connect(signer).cancelWithdraw(shares);
+  tx = await vaultContract.connect(signer).cancelWithdraw(10000);
 
   // Set redemption period
   //const tx1 = await vaultContract.connect(signer).setRedemptionPeriod(600);

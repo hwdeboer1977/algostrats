@@ -35,7 +35,6 @@ export default function VaultWithdrawalInfo({
   // pendingOf
   const [poShares, setPoShares] = useState(0n);
   const [poUnlockAt, setPoUnlockAt] = useState(0n);
-  const [poTimeLeftChain, setPoTimeLeftChain] = useState(0n);
 
   // public mappings
   const [mapPendingShares, setMapPendingShares] = useState(0n);
@@ -43,6 +42,9 @@ export default function VaultWithdrawalInfo({
 
   // local countdown
   const [localTimeLeft, setLocalTimeLeft] = useState(0);
+
+  const [totalAssets, setTotalAssets] = useState(0);
+  const [totalSupply, setTotalSupply] = useState(0);
 
   // env + contract sanity
   const [chainId, setChainId] = useState(null);
@@ -138,6 +140,28 @@ export default function VaultWithdrawalInfo({
         );
         setRedemptionPeriod(0n);
       }
+      try {
+        // If ABI or contract doesn't have the function, catch and show 0
+        const assets = await c.totalAssets();
+        setTotalAssets(assets);
+      } catch (e) {
+        console.warn(
+          "redemptionPeriod() unavailable; defaulting to 0. Reason:",
+          e
+        );
+        setTotalAssets(0n);
+      }
+      try {
+        // If ABI or contract doesn't have the function, catch and show 0
+        const supply = await c.totalSupply();
+        setTotalSupply(supply);
+      } catch (e) {
+        console.warn(
+          "redemptionPeriod() unavailable; defaulting to 0. Reason:",
+          e
+        );
+        setTotalSupply(0n);
+      }
     })();
   }, [vaultAddress, contractOk]);
 
@@ -151,7 +175,6 @@ export default function VaultWithdrawalInfo({
         const [shares, unlockAt, timeLeft] = await c.pendingOf(addr);
         setPoShares(shares);
         setPoUnlockAt(unlockAt);
-        setPoTimeLeftChain(timeLeft);
 
         const [pShares, pUnlock] = await Promise.all([
           c.pendingShares(addr).catch(() => 0n),
@@ -188,6 +211,19 @@ export default function VaultWithdrawalInfo({
     return v > 0n ? v : poShares ?? 0n;
   }, [mapPendingShares, poShares]);
 
+  // pending wBTC = user's pending shares * (totalAssets / totalSupply)
+  // All values are BigInt; result is in asset units (wBTC has 8 decimals).
+
+  const pendingWbtcRaw = useMemo(() => {
+    if (!pendingSharesToShow || totalSupply === 0n) return 0n;
+    return (pendingSharesToShow * totalAssets) / totalSupply;
+  }, [pendingSharesToShow, totalAssets, totalSupply]);
+
+  const formattedPendingWbtc = useMemo(
+    () => formatUnits(pendingWbtcRaw, 8), // wBTC is 8 decimals
+    [pendingWbtcRaw]
+  );
+
   const unlockAtToShow = useMemo(() => {
     const v = mapPendingUnlockAt ?? 0n;
     return v > 0n ? v : poUnlockAt ?? 0n;
@@ -220,25 +256,25 @@ export default function VaultWithdrawalInfo({
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 text-sm">
-            <div className="font-medium">Your address</div>
-            <div className="font-mono truncate">
-              {addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "—"}
+            <div className="font-medium">
+              Redemption period: {fmtDuration(Number(redemptionPeriod))}
             </div>
 
-            <div className="font-medium">Redemption period</div>
-            <div>{fmtDuration(Number(redemptionPeriod))}</div>
+            <div className="font-medium">
+              Pending shares: {formattedPendingShares}
+            </div>
 
-            <div className="font-medium">Pending shares</div>
-            <div className="font-mono">{formattedPendingShares}</div>
+            <div className="font-medium">
+              Pending wBTC: {formattedPendingWbtc}
+            </div>
 
-            <div className="font-medium">Unlocks at</div>
-            <div>{unlockDate ? unlockDate.toLocaleString() : "—"}</div>
+            <div className="font-medium">
+              Unlocks at: {unlockDate ? unlockDate.toLocaleString() : "—"}
+            </div>
 
-            <div className="font-medium">Time left</div>
-            <div>{fmtDuration(localTimeLeft)}</div>
-
-            <div className="font-medium">Chain timeLeft (from contract)</div>
-            <div>{fmtDuration(Number(poTimeLeftChain || 0n))}</div>
+            <div className="font-medium">
+              Time left: {fmtDuration(localTimeLeft)}
+            </div>
           </div>
 
           {!addr && (
