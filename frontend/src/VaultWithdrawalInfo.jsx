@@ -285,12 +285,6 @@ export default function VaultWithdrawalInfo({
           )}
         </>
       )}
-
-      <p className="text-xs text-gray-500">
-        Note: the live countdown is computed locally from <code>unlockAt</code>{" "}
-        for smooth updates. The “chain timeLeft” is read from{" "}
-        <code>pendingOf()</code> and updates on refresh/polls.
-      </p>
     </div>
   );
 }

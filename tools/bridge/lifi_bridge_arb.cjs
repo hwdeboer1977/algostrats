@@ -19,7 +19,7 @@ const { createWalletClient, http, defineChain } = require("viem");
 const { privateKeyToAccount } = require("viem/accounts");
 
 // ---------------------------------------------------------
-// Example: Bridge USDC between Arbitrum ↔ Solana using LI.FI
+// Example: Bridge USDC between Solana ↔ Arbitrum using LI.FI
 // ---------------------------------------------------------
 
 // --- EVM (Arbitrum) signer ---
