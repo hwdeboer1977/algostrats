@@ -24,7 +24,7 @@ const P = {
   ),
   LIFI_BRIDGE: path.resolve(
     __dirname,
-    "../../tools/bridge/lifi_bridge_sol.cjs"
+    "../../tools/bridge/lifi_bridge_arb.cjs"
   ),
   SEND_USDC_JS: path.resolve(__dirname, "../../backend/keeper/send_usdc.js"),
   SEND_USDC_PY: path.resolve(__dirname, "../../tools/hyperliquid/send_usdc.py"),
@@ -338,16 +338,30 @@ async function step4_withdrawHL(amountHL, opts = {}) {
 }
 
 // Function to bridge back from Solana to Arbitrum
-async function step5_bridgeSolanaToArbitrum(amount) {
+async function step5_bridgeSolanaToArbitrum(amount, opts = {}) {
   if (amount == null)
     throw new Error("step5_bridgeSolanaToArbitrum: amount is required");
+
   const script = P.LIFI_BRIDGE;
-  console.log("▶ Step 5:", ["node", script, String(amount)].join(" "));
-  await run("node", [script, String(amount)], { cwd: path.dirname(script) });
+  const args = [script, String(amount)];
+
+  // Build env for the child process
+  const env = { ...process.env };
+  // Source signer on Solana (who holds USDC to send):
+  if (opts.solPk) env.WALLET_SOLANA_SECRET = opts.solPk;
+  // Destination EVM wallet (wallet B):
+  if (opts.evmPk) env.WALLET_SECRET = opts.evmPk; // EVM private key
+  if (opts.to) env.EVM_TO_ADDRESS = opts.to; // optional explicit toAddress override
+
+  console.log(
+    "▶ Step 5 (Sol→Arb bridge):",
+    ["node", script, String(amount)].join(" ")
+  );
+  await run("node", args, { cwd: path.dirname(script), env });
 }
 
 // Function to send USDC from wallet A to the vault
-async function step6_sendUSDC_A_to_vault(amountA = undefined, opts = {}) {
+async function step6_sendUSDC_A_to_owner(amountA = undefined, opts = {}) {
   const amountFromCli = getArg("sendA");
   const amount = amountA ?? amountFromCli ?? process.env.AMOUNT ?? null;
 
@@ -364,7 +378,7 @@ async function step6_sendUSDC_A_to_vault(amountA = undefined, opts = {}) {
 }
 
 // Function to send USDC from wallet B to the vault
-async function step7_sendUSDC_B_to_vault(amountB = undefined, opts = {}) {
+async function step7_sendUSDC_B_to_owner(amountB = undefined, opts = {}) {
   const amountFromCli = getArg("sendB");
   const amount = amountB ?? amountFromCli ?? process.env.AMOUNT ?? null;
 
@@ -382,9 +396,12 @@ async function step7_sendUSDC_B_to_vault(amountB = undefined, opts = {}) {
   await run("python", args, { env, cwd: path.dirname(P.SEND_USDC_PY) });
 }
 
-// Function to swap back from USDC to wBTC
+// Function to swap back from USDC to wBTC and send to vault (or custom recipient)
 async function step8_swapUSDCtoWBTC(amountSwap = undefined, opts = {}) {
-  const amountFromCli = getArg("swapAmount");
+  const amountFromCli = getArg("swapAmount"); // e.g. --swapAmount=123.45
+  const toFromCli = getArg("to"); // e.g. --to=0xVault...
+  const slippageFromCli = getArg("slippage"); // e.g. --slippage=75
+
   const amount = amountSwap ?? amountFromCli ?? null;
   if (amount == null) {
     console.log(
@@ -393,19 +410,44 @@ async function step8_swapUSDCtoWBTC(amountSwap = undefined, opts = {}) {
     return;
   }
 
+  // Resolve candidate recipient
+  let toResolved = opts.to ?? toFromCli ?? process.env.VAULT_ADDRESS ?? null;
+
+  // ✅ Sanitize + validate (prevents the swap script from logging the fallback warning)
+  if (toResolved) {
+    try {
+      toResolved = ethers.utils.getAddress(
+        String(toResolved)
+          .trim()
+          .replace(/^["']|["']$/g, "")
+      );
+    } catch {
+      console.warn(
+        "⚠️ step8: invalid --to provided. Omitting recipient so swap falls back to owner."
+      );
+      toResolved = null;
+    }
+  }
+
+  const slippage = opts.slippage ?? slippageFromCli ?? process.env.SLIPPAGE_BPS;
+
   const args = [P.SWAP_USDC_WBTC, String(amount)];
-  if (opts.slippage) args.push(`--slippage=${opts.slippage}`);
-  if (opts.to) args.push(`--to=${opts.to}`);
+  if (slippage) args.push(`--slippage=${slippage}`);
+  if (toResolved) args.push(`--to=${toResolved}`);
 
   const env = { ...process.env, AMOUNT: String(amount) };
-  console.log(`▶ Step 8: Uniswap swap USDC -> WBTC (amount=${amount})…`);
+  console.log(
+    `▶ Step 8: Uniswap swap USDC -> WBTC (amount=${amount}${
+      toResolved ? `, to=${toResolved}` : ""
+    })…`
+  );
   await run("node", args, { env, cwd: path.dirname(P.SWAP_USDC_WBTC) });
 }
 
 /** ---------- Orchestration ---------- */
 async function main() {
-  const stage = getArg("stage", "init"); // 'init' or 'finalize'
-  //const stage = getArg("stage", "finalize"); // ''init' or 'finalize'
+  //const stage = getArg("stage", "init"); // 'init' or 'finalize'
+  const stage = getArg("stage", "finalize"); // ''init' or 'finalize'
 
   // Keep track of hours left (for redemption)
   const hLeft = hoursLeft();
@@ -551,15 +593,30 @@ async function main() {
 
   // Stage 2: Finalize (after redemption period)
   if (stage === "finalize") {
-    await step3_finalizeWithdrawDrift();
-    // const amountBridge = 6;
-    await step5_bridgeSolanaToArbitrum(neededUsdcDrift);
-    // const amountA = 2;
-    await step6_sendUSDC_A_to_vault(neededUsdcDrift);
+    //await step3_finalizeWithdrawDrift();
+
+    //const neededUsdcDrift = 8;
+    // await step5_bridgeSolanaToArbitrum(neededUsdcDrift, {
+    //   // Solana key that holds the USDC (source) — if different from default:
+    //   // solPk: process.env.WALLET_SOLANA_SECRET_SOURCE,
+
+    //   // Destination on Arbitrum = wallet A:
+    //   evmPk: process.env.PK_RECIPIENT_A,
+    //   to: process.env.WALLET_RECIPIENT_A, // optional; see script tweak below
+    // });
+
+    // const neededUsdcDrift = 2;
+    //await step6_sendUSDC_A_to_owner(neededUsdcDrift);
     // const amountB = 2;
-    await step7_sendUSDC_B_to_vault(neededUsdcHL);
-    const amountSwap = neededUsdcDrift + neededUsdcHL;
-    await step8_swapUSDCtoWBTC(amountSwap);
+    //await step7_sendUSDC_B_to_owner(neededUsdcHL);
+
+    //const amountSwap = neededUsdcDrift + neededUsdcHL;
+    // Example usage:
+    const amountSwap = 1;
+    await step8_swapUSDCtoWBTC(amountSwap, {
+      to: process.env.VAULT_ADDRESS,
+      slippage: 75,
+    });
 
     console.log("FINALIZE stage done.");
 
