@@ -1,6 +1,13 @@
 // CommonJS + ethers v5 + AlphaRouter (Uniswap Smart Order Router)
 // USDC -> WBTC on Arbitrum (42161)
 
+// Usage:
+// node swap-usdc-wbtc.cjs <amountUSDC> [toAddress]
+//   e.g. node swap-usdc-wbtc.cjs 125.5 0xYourVaultAddress
+//
+// If [toAddress] is omitted, falls back to process.env.VAULT_ADDRESS,
+// otherwise to wallet.address.
+
 const path = require("path");
 const dotenv = require("dotenv");
 const { ethers } = require("ethers");
@@ -35,9 +42,27 @@ const DEADLINE_SECS = Number(process.env.DEADLINE_SECS || 1200); // 20 min
 
 if (!PRIVATE_KEY) throw new Error("Set PRIVATE_KEY in .env (WALLET_SECRET).");
 
+const toArg = process.argv[3];
+const VAULT_ENV = process.env.VAULT_ADDRESS;
+
+function resolveRecipient(wallet) {
+  const raw = toArg || wallet.address;
+  try {
+    return ethers.utils.getAddress(raw); // checksum + validate
+  } catch (_) {
+    console.warn(
+      "⚠️ Invalid recipient provided. Falling back to owner wallet."
+    );
+    return wallet.address;
+  }
+}
+
 async function main() {
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+
+  const recipient = resolveRecipient(wallet);
+  console.log("Recipient (WBTC goes to):", recipient);
 
   // ---- Token metadata ----
   const USDC = new Token(
@@ -68,7 +93,7 @@ async function main() {
   const router = new AlphaRouter({ chainId: ChainId.ARBITRUM_ONE, provider });
   const route = await router.route(inputAmount, WBTC, TradeType.EXACT_INPUT, {
     type: SwapType.SWAP_ROUTER_02,
-    recipient: wallet.address,
+    recipient, // Default is owner, otherwise address as input
     slippageTolerance: new Percent(SLIPPAGE_BPS, 10_000),
     deadline: Math.floor(Date.now() / 1000) + DEADLINE_SECS,
   });
