@@ -18,6 +18,8 @@ id.json
 # Ignore xlsx
 *.xlsx
 
+
+
 # Ignore these folders
 tests/
 tools/bridge/node_modules/
@@ -29,3 +31,5 @@ backend/keeper/OLD/
 backend/logs/
 backend/server/OLD/
 backend/keeper/BACKUP/
+backend/cron/
+backend/keeper/withdraw_state.json
