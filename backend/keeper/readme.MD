@@ -1,7 +1,7 @@
 # Keeper Backend
 
 This backend service automates flows after deposits into an **ERC-4626 vault** on Arbitrum.  
-It listens for `Deposit` events, then runs a **pipeline** to swap, bridge, deposit, and open positions on **Drift** and **Hyperliquid**.
+It listens for `Deposit` and `RequestWithdraw` events, then runs a **pipeline** to swap, bridge, deposit, and open/close positions on **Drift** and **Hyperliquid**.
 
 A second **withdraw pipeline** orchestrates the reverse flow.
 
@@ -9,155 +9,134 @@ A second **withdraw pipeline** orchestrates the reverse flow.
 
 ```mermaid
 flowchart TD
-    User[User via Frontend] -->|wBTC| Vault
-    Vault -->|yBTC| User
-    Vault -->|wBTC| Keeper
+  subgraph Vault
+    V[ERC-4626 Vault]
+  end
 
-    Keeper -->|x%| Drift[Drift]
-    Keeper -->|1-x%| HL[Hyperliquid]
+  %% --- User actions ---
+  U[User via Frontend] -->|Deposit| V
+  U -->|RequestWithdraw| V
 
-    Drift --> DriftProcess[Open Position → Monitor & Adjust]
-    HL --> HLProcess[Open Position → Monitor & Adjust]
+  %% --- One poller listens to BOTH events ---
+  V -->|Deposit event| EP[eventPoller]
+  V -->|RequestWithdraw event| EP
 
-    style User fill:#f9f,stroke:#333,stroke-width:1px
-    style Vault fill:#bbf,stroke:#333,stroke-width:1px
-    style Keeper fill:#f96,stroke:#333,stroke-width:1px
-    style DriftProcess fill:#bfb,stroke:#333,stroke-width:1px
-    style HLProcess fill:#bfb,stroke:#333,stroke-width:1px
+  %% --- eventPoller routes work ---
+  EP -->|Deposit job| DPipe[depositPipeline]
+  EP -->|Withdraw request| WC[withdrawChecker]
 
+  %% --- Deposit pipeline fan-out ---
+  DPipe --> SB[Swap and Bridge]
+  SB --> H[Hyperliquid]
+  SB --> D[Drift]
+  H --> HP[HL process: open and monitor]
+  D --> DP[Drift process: open and monitor]
+
+  %% --- Withdrawal path (checker → pipeline) ---
+  WC -->|stage calls| WP[withdrawPipeline]
+  WP --> HLW[HL: close and withdraw]
+  WP --> DRW[Drift: request then finalize]
+  WP --> BR[Bridge back to Arbitrum]
+  WP --> VAULT_SEND[Send USDC to vault]
+  WP --> SWAP2[Swap USDC to WBTC]
+  SWAP2 --> V
+  V -->|payout| U
+
+  %% --- Styling ---
+  style U fill:#f9f,stroke:#333,stroke-width:1px
+  style V fill:#bbf,stroke:#333,stroke-width:1px
+  style EP fill:#ffd,stroke:#333,stroke-width:1px
+  style DPipe fill:#efe,stroke:#333,stroke-width:1px
+  style WC fill:#efe,stroke:#333,stroke-width:1px
+  style WP fill:#efe,stroke:#333,stroke-width:1px
 ```
 
-## ✨ Components
-
-- **index.js** — Entry point.
-  - Connects to Arbitrum via ethers provider.
-  - Loads vault ABI + WBTC/USDC ERC20 contracts.
-  - Starts the deposit poller and pipeline queue.
-  - Schedules rebalances and monitors HL/Drift snapshots.
-- **depositPoller.js** — Polls chain logs for `Deposit(address,address,uint256,uint256)`.  
-  Uses block ranges with reorg buffer instead of ephemeral filters.
-- **depositPipeline.js** — Orchestrates the full flow after a vault deposit:
-  1. Detect WBTC arrival.
-  2. Swap WBTC → USDC (90%).
-  3. Bridge 85% of A’s USDC to Solana.
-  4. Deposit B’s USDC to Hyperliquid and open order.
-  5. Deposit Solana USDC to Drift vault.
-- **withdrawPipeline.js** — Multi-stage CLI for reversing allocations:
-  - Step 1: Close Hyperliquid positions.
-  - Step 2/3: Request + finalize Drift withdraw.
-  - Step 4: Withdraw USDC from Hyperliquid.
-  - Step 5: Bridge Solana → Arbitrum.
-  - Step 6/7: Send USDC A/B to vault.
-  - Step 8: Swap USDC → WBTC.
-- **rebalance.js** — Builds `checkAndMaybeRebalance()`, ensuring vault asset balances meet `rebalanceMin` before calling `rebalance()`.
-- **python_runner.js** — Wrapper for running Python HL scripts (`create_orders.py`) with UTF-8 enforced and JSON output parsing.
-- **send_usdc.js** — Helper to send USDC on Arbitrum from one wallet to another.
-- **logger.js** — Winston logger with console + daily rotating file transports.
+<sub>Note: Mermaid can be picky with Unicode arrows and parentheses in node labels. This version uses ASCII-only labels.</sub>
 
 ---
 
-## 📦 Dependencies
+## 🔄 Poller changes
 
-- Node.js 18+
-- Packages:
-  ```bash
-  npm install ethers dotenv winston winston-daily-rotate-file @solana/web3.js @solana/spl-token
-  ```
-- Python 3 (for Hyperliquid scripts).
+- **eventPoller.js** _(replaces `depositPoller.js`)_  
+  Unified on-chain listener that subscribes to vault events and enqueues jobs:
+  - **`Deposit`** → enqueues a **deposit job** handled by the **deposit pipeline** (swap → bridge → HL/Drift).
+  - **`RequestWithdraw`** → records a withdrawal request for the **withdraw checker** to time and advance.
+  - (Optional) **`FinalizeWithdraw` / `Withdraw`** → marks requests complete and clears local state.
 
----
-
-## 🌐 Environment Variables (`.env`)
-
-Example:
-
-```ini
-# Arbitrum
-ARBITRUM_ALCHEMY_MAINNET=https://arb-mainnet.g.alchemy.com/v2/your-key
-KEEPER_MAINNET_PRIVATE_KEY=0x...
-
-# Vault + tokens
-VAULT_ADDRESS=0x...
-WBTC_ADDRESS=0x...
-USDC_ADDRESS=0x...
-
-# Recipients
-WALLET_RECIPIENT_A=0x...
-WALLET_RECIPIENT_B=0x...
-PK_RECIPIENT_A=0x...
-PK_RECIPIENT_B=0x...
-
-# Solana
-SOLANA_RPC=https://api.mainnet-beta.solana.com
-SOLANA_PUBKEY=YourSolanaPubkey
-SOLANA_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
-
-# Keeper settings
-CONFIRMATIONS=2
-EVENT_POLL_MS=4000
-REBALANCE_DEBOUNCE_MS=30000
-LOG_DIR=./logs
-LOG_LEVEL=info
-```
+Why? → One poller = fewer race conditions and one source of truth for job queue + deduping.
 
 ---
 
-## 🚀 Run
+## 🧵 Withdrawal system (new)
 
-Start the keeper:
+The withdrawal flow is now composed of three moving parts:
+
+1. **withdrawPipeline.js** — _stage orchestrator_  
+   Reverses deposit allocation, step by step:
+
+   - `--stage=close-hl` Close HL positions, free USDC.
+   - `--stage=drift-request` Request Drift withdrawal.
+   - `--stage=drift-finalize` Finalize Drift withdrawal after cooldown.
+   - `--stage=withdraw-hl` Withdraw free USDC from HL.
+   - `--stage=bridge-solana` Bridge Solana to Arbitrum USDC.
+   - `--stage=send-to-vault` Send USDC back to the vault.
+   - `--stage=swap-wbtc` Swap USDC to WBTC, complete payout.
+
+   Each stage logs a **reqId** and writes progress to `withdraw_state.json`.
+
+2. **withdrawChecker.js** — _timer/logic brain_
+
+   - Watches pending withdrawal requests from `eventPoller`.
+   - Tracks cooldowns (`cooldownTime`).
+   - Updates `withdraw_state.json` so requests resume safely.
+   - Calls `withdrawPipeline.js` with the correct stage when eligible.
+
+3. **withdrawRunner.js** — _process supervisor_
+   - Runs the **checker** in production, restarts on crash.
+   - Surfaces logs to console/files.
+   - Keeps a backlog so no request is lost if RPC hiccups.
+
+Local state:
+
+- **`withdraw_state.json`** → `{ reqId → { status, nextStage, lastSeen, ... } }`
+
+---
+
+## 🧩 Components
+
+- **index.js** — Entry; bootstraps provider, ABIs, logger, queues; starts `eventPoller`.
+- **eventPoller.js** — Replaces `depositPoller.js`. Subscribes to vault events (`Deposit`, `RequestWithdraw`, …) and routes jobs.
+- **depositPipeline.js** — Swap → Bridge → HL/Drift allocation after deposits.
+- **withdrawPipeline.js** — Stage-based reverse flow for withdrawals.
+- **withdrawChecker.js** — Schedules and advances withdrawal requests through pipeline stages.
+- **withdrawRunner.js** — Keeps the checker alive (production supervisor).
+- **rebalance.js** — `checkAndMaybeRebalance()` helper.
+- **python_runner.js** — Runs HL Python utilities with JSON I/O.
+- **send_usdc.js** — Arbitrum USDC transfer helper.
+- **logger.js** — Console + daily rotate.
+
+---
+
+## 🧪 How to run
+
+**Keeper (deposits + monitoring):**
 
 ```bash
 node index.js
 ```
 
-This will:
+**Withdrawal supervisor (checker + pipeline):**
 
-- Listen for deposits in the vault.
-- Trigger rebalance checks.
-- Queue pipeline jobs for swap/bridge/HL/Drift.
-- Log all activity to console and rotating log files.
-
----
-
-## 📊 Flow Diagram
-
-```mermaid
-flowchart TD
-    User[User via Frontend] -->|wBTC| Vault
-    Vault -->|yBTC| User
-    Vault -->|wBTC| Keeper
-
-    Keeper -->|x%| Drift[Drift]
-    Keeper -->|1-x%| HL[Hyperliquid]
-
-    Drift --> DriftProcess[Open Position → Monitor & Adjust]
-    HL --> HLProcess[Open Position → Monitor & Adjust]
-
-    style User fill:#f9f,stroke:#333,stroke-width:1px
-    style Vault fill:#bbf,stroke:#333,stroke-width:1px
-    style Keeper fill:#f96,stroke:#333,stroke-width:1px
-    style DriftProcess fill:#bfb,stroke:#333,stroke-width:1px
-    style HLProcess fill:#bfb,stroke:#333,stroke-width:1px
+```bash
+node withdrawRunner.js
 ```
 
----
+**Manual debug of one stage:**
 
-## 📁 File Map
-
-```
-index.js              # Keeper main entry
-depositPoller.js      # Poller for ERC4626 Deposit events
-depositPipeline.js    # Pipeline: swap, bridge, HL deposit, Drift deposit
-withdrawPipeline.js   # Reverse pipeline for withdrawals
-rebalance.js          # Rebalance check + tx
-send_usdc.js          # Send USDC on Arbitrum
-python_runner.js      # Run Python HL scripts with JSON output
-logger.js             # Winston logger
-readme.MD             # This documentation
+```bash
+node withdrawPipeline.js --stage=drift-finalize --reqId=req_1234567890
 ```
 
+> In production: run `server.js`, `index.js`, and `withdrawRunner.js` as separate long-running processes (e.g. with pm2 or systemd).
+
 ---
-
-### License
-
-MIT (or your preference).
