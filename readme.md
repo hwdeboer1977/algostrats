@@ -15,23 +15,49 @@ The system is designed to:
 
 ```mermaid
 flowchart TD
-    User[User via Frontend] -->|wBTC| Vault
-    Vault -->|yBTC| User
-    Vault -->|wBTC| Keeper
+  subgraph Vault
+    V[ERC-4626 Vault]
+  end
 
-    Keeper -->|x%| Drift[Drift]
-    Keeper -->|1-x%| HL[Hyperliquid]
+  %% --- User actions ---
+  U[User via Frontend] -->|Deposit| V
+  U -->|RequestWithdraw| V
 
-    Drift --> DriftProcess[Open Position → Monitor & Adjust]
-    HL --> HLProcess[Open Position → Monitor & Adjust]
+  %% --- One poller listens to BOTH events ---
+  V -->|Deposit event| EP[eventPoller]
+  V -->|RequestWithdraw event| EP
 
-    style User fill:#f9f,stroke:#333,stroke-width:1px
-    style Vault fill:#bbf,stroke:#333,stroke-width:1px
-    style Keeper fill:#f96,stroke:#333,stroke-width:1px
-    style DriftProcess fill:#bfb,stroke:#333,stroke-width:1px
-    style HLProcess fill:#bfb,stroke:#333,stroke-width:1px
+  %% --- eventPoller routes work ---
+  EP -->|Deposit job| DPipe[depositPipeline]
+  EP -->|Withdraw request| WC[withdrawChecker]
 
+  %% --- Deposit pipeline fan-out ---
+  DPipe --> SB[Swap and Bridge]
+  SB --> H[Hyperliquid]
+  SB --> D[Drift]
+  H --> HP[HL process: open and monitor]
+  D --> DP[Drift process: open and monitor]
+
+  %% --- Withdrawal path (checker → pipeline) ---
+  WC -->|stage calls| WP[withdrawPipeline]
+  WP --> HLW[HL: close and withdraw]
+  WP --> DRW[Drift: request then finalize]
+  WP --> BR[Bridge back to Arbitrum]
+  WP --> VAULT_SEND[Send USDC to vault]
+  WP --> SWAP2[Swap USDC to WBTC]
+  SWAP2 --> V
+  V -->|payout| U
+
+  %% --- Styling ---
+  style U fill:#f9f,stroke:#333,stroke-width:1px
+  style V fill:#bbf,stroke:#333,stroke-width:1px
+  style EP fill:#ffd,stroke:#333,stroke-width:1px
+  style DPipe fill:#efe,stroke:#333,stroke-width:1px
+  style WC fill:#efe,stroke:#333,stroke-width:1px
+  style WP fill:#efe,stroke:#333,stroke-width:1px
 ```
+
+<sub>Note: Mermaid can be picky with Unicode arrows and parentheses in node labels. This version uses ASCII-only labels.</sub>
 
 ---
 
