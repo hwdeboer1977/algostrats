@@ -6,6 +6,7 @@ require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
 const { ethers } = require("ethers");
 const { runPython } = require("./python_runner.js");
 const fs = require("fs");
+const RUNNER = path.resolve(__dirname, "./withdrawRunner.js"); // adjust path if needed
 
 /** ---------- Config: absolute paths to your scripts ---------- */
 const P = {
@@ -61,6 +62,20 @@ function getArg(name, def = undefined) {
 //const stage = getArg("stage", "init"); // "--stage=init"
 const usdcHuman = getArg("usdc"); // "--usdc=123.45" (string or undefined)
 
+function runRunner(cmd, argsObj = {}) {
+  const args = [
+    RUNNER,
+    cmd,
+    ...Object.entries(argsObj).map(([k, v]) => `--${k}=${v}`),
+  ];
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { stdio: "inherit" });
+    child.on("exit", (code) =>
+      code === 0 ? resolve() : reject(new Error(`runner ${cmd} exited ${code}`))
+    );
+  });
+}
+
 // run a Node script and capture stdout
 function runNode(file, args = []) {
   return new Promise((resolve, reject) => {
@@ -79,60 +94,6 @@ function runNode(file, args = []) {
       code === 0 ? resolve(out) : reject(new Error(err || `exit ${code}`))
     );
   });
-}
-
-// Helper to keep track of time after withdraw is initiated
-// After 25 hours, finalization of withdrawal will start
-const STATE_FILE = path.join(__dirname, ".withdraw_state.json");
-
-function saveInitTimestamp(data = {}) {
-  const payload = { startedAt: Date.now(), ...data };
-  fs.writeFileSync(STATE_FILE, JSON.stringify(payload, null, 2));
-}
-
-function readState() {
-  try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-
-// Detach a tiny Node process that sleeps 25h, then runs finalize.
-// Works on Windows & *nix. Parent can exit safely.
-const SCRIPT = path.resolve(__filename);
-
-function scheduleFinalizeAfterHours(
-  hours = process.env.REDEMPTION_DRIFT,
-  visible = false
-) {
-  const delayMs = Math.round(hours * 60 * 60 * 1000);
-
-  const code = `
-    setTimeout(() => {
-      const { spawn } = require('child_process');
-      spawn(process.execPath, [${JSON.stringify(SCRIPT)}, '--stage=finalize'], {
-        cwd: ${JSON.stringify(__dirname)},
-        stdio: ${visible ? "'inherit'" : "'ignore'"},
-        detached: ${visible ? "false" : "true"}
-      })${visible ? "" : ".unref()"};
-    }, ${delayMs});
-  `;
-
-  spawn(process.execPath, ["-e", code], {
-    cwd: __dirname,
-    stdio: visible ? "inherit" : "ignore",
-    detached: !visible,
-  })[visible ? "on" : "unref"]?.("close", () => {});
-}
-
-// Helper that we can call anywhere to see time left
-function hoursLeft() {
-  const st = readState();
-  if (!st?.startedAt) return null;
-  const elapsed = Date.now() - st.startedAt;
-  const total = 25 * 60 * 60 * 1000;
-  return Math.max(0, (total - elapsed) / (1000 * 60 * 60));
 }
 
 // Get balance of USDC in Drift's vault
@@ -258,6 +219,9 @@ function splitHLWithdrawal({
 --stage=init | finalize
 ... (your comment block unchanged)
 ---------------------------------------------------------------- */
+
+// Write status of withdrawal to JSON file
+const STATE_FILE = path.join(__dirname, "withdraw_state.json");
 
 // Step 1: Close a position on Hyperliquid, default 10%
 // Pass closePct explicitly, or override via --closePct / --closeSize in CLI
@@ -444,16 +408,123 @@ async function step8_swapUSDCtoWBTC(amountSwap = undefined, opts = {}) {
   await run("node", args, { env, cwd: path.dirname(P.SWAP_USDC_WBTC) });
 }
 
+async function withdrawPerProtocol(usdcHuman) {
+  // Determining how much to withdraw from both protocols
+  console.log("Determining how much to withdraw from both protocols");
+
+  // Shares to take out of protocols
+  const SHARE_DRIFT = process.env.SHARE_DRIFT;
+  const SHARE_HL = process.env.SHARE_HL;
+
+  // Read current positions/balances (Drift + HL)
+  const {
+    balanceUsd, // Balance USD in Drift vault
+    totalUsd, // Total balance USD in HL
+    cashUsd, // Total available USD in HL
+    posPNL, // Unrealized PNL
+    positionValue, // Position value
+    marginUsed, // Margin used = positionValue/leverage
+    effLev, // leverage
+  } = await readPositions();
+
+  console.log(
+    balanceUsd,
+    totalUsd,
+    cashUsd,
+    posPNL,
+    positionValue,
+    marginUsed,
+    effLev
+  );
+
+  // Calculate amount USDC per protocol
+  const neededUsdcDrift = usdcHuman * SHARE_DRIFT;
+  const neededUsdcHL = usdcHuman * SHARE_HL;
+
+  // Available balances (from readers above)
+  const availDrift = Number(balanceUsd ?? 0); // Drift "Balance (USD)"
+  const availTotalHL = Number(totalUsd ?? 0); // HL "total_usd"
+  const availCashHL = Number(cashUsd ?? 0);
+  const availPosValHL = Number(positionValue ?? 0);
+
+  console.log("need: drift=", neededUsdcDrift, "hl=", neededUsdcHL);
+  console.log("avail: drift=", availDrift);
+  console.log(
+    "avail total HL=",
+    availTotalHL,
+    "avail cash hl=",
+    availCashHL,
+    "avail positionValue hl=",
+    availPosValHL
+  );
+
+  // If the vault is at a loss ==> share price is lower so user gets less wBTC
+  // It may never be the case that a user tries to withdraw 'too much' USDC
+  const { closePosUsd, fromCash, shortage } = splitHLWithdrawal({
+    totalUsd,
+    cashUsd,
+    positionValue,
+    marginUsed, // <-- pass this
+    effLev,
+    targetRatio: 0.2,
+    withdrawUsd: neededUsdcHL,
+  });
+
+  console.log(
+    "Close position:",
+    closePosUsd,
+    "Withdraw from Cash: ",
+    fromCash,
+    "Shortage: ",
+    shortage
+  );
+
+  // turn USD-notional into percentage of current position
+  function pctFromNotional(closePosUsd, positionValue) {
+    if (
+      !Number.isFinite(closePosUsd) ||
+      !Number.isFinite(positionValue) ||
+      positionValue <= 0
+    )
+      return 0;
+    const pct = (closePosUsd / positionValue) * 100;
+    // clamp and round a bit for CLI
+    return Math.max(0, Math.min(100, Number(pct.toFixed(4))));
+  }
+
+  const closePct = pctFromNotional(closePosUsd, positionValue);
+
+  console.log(
+    `→ Close ${closePct}% of HL position (≈ $${closePosUsd.toFixed(
+      2
+    )} notional), fromCash=${fromCash.toFixed(2)}, shortage=${shortage.toFixed(
+      2
+    )}`
+  );
+
+  if (closePct > 0) {
+    //await step1_closeHL(closePct); // your existing function
+  } else {
+    console.log(
+      "No HL close needed (cash covers withdraw and ratio within band)."
+    );
+  }
+
+  return { neededUsdcDrift, neededUsdcHL };
+}
+
 /** ---------- Orchestration ---------- */
 async function main() {
-  //const stage = getArg("stage", "init"); // 'init' or 'finalize'
-  const stage = getArg("stage", "finalize"); // ''init' or 'finalize'
+  const stage = getArg("stage", "init");
+  console.log(">>> PIPELINE START");
+  console.log(">>> __filename:", __filename);
+  console.log(">>> cwd:", process.cwd());
+  console.log(">>> argv:", process.argv.slice(2));
+  console.log(">>> Stage =", stage);
 
-  // Keep track of hours left (for redemption)
-  const hLeft = hoursLeft();
-  if (hLeft !== null) {
-    console.log(`⏳ Auto-finalize ETA: ${hLeft.toFixed(2)} hours`);
-  }
+  // Unique id
+  const reqId = getArg("reqId", `req_${Date.now()}`);
+  console.log(reqId);
 
   // Initial stage
   if (stage === "init") {
@@ -464,122 +535,16 @@ async function main() {
       process.exit(1);
     }
 
-    // Optional: guard to avoid scheduling multiple timers if one is pending
-    const existing = readState();
-    if (existing?.startedAt) {
-      console.log(
-        "⚠️ Withdraw already scheduled; overwriting previous schedule."
-      );
-    }
-
-    // Record start + any context you want to reuse later
-    saveInitTimestamp({ usdcHuman });
-
-    // Fire-and-forget timer to auto-run finalize in 25h
-    scheduleFinalizeAfterHours(process.env.REDEMPTION_DRIFT, true);
-
-    console.log("⏳ Withdraw initiated. Auto-finalize scheduled in ~25 hours.");
-
     // Amount of USDC needed
     console.log("USDC needed:", usdcHuman);
 
-    // Shares to take out of protocols
-    const SHARE_DRIFT = process.env.SHARE_DRIFT;
-    const SHARE_HL = process.env.SHARE_HL;
-
-    // Read current positions/balances (Drift + HL)
-    const {
-      balanceUsd, // Balance USD in Drift vault
-      totalUsd, // Total balance USD in HL
-      cashUsd, // Total available USD in HL
-      posPNL, // Unrealized PNL
-      positionValue, // Position value
-      marginUsed, // Margin used = positionValue/leverage
-      effLev, // leverage
-    } = await readPositions();
-
-    console.log(
-      balanceUsd,
-      totalUsd,
-      cashUsd,
-      posPNL,
-      positionValue,
-      marginUsed,
-      effLev
+    // Determine how much to withdraw from both protocols
+    const { neededUsdcDrift, neededUsdcHL } = await withdrawPerProtocol(
+      usdcHuman
     );
 
-    // Calculate amount USDC per protocol
-    const neededUsdcDrift = usdcHuman * SHARE_DRIFT;
-    const neededUsdcHL = usdcHuman * SHARE_HL;
-
-    // Available balances (from readers above)
-    const availDrift = Number(balanceUsd ?? 0); // Drift "Balance (USD)"
-    const availTotalHL = Number(totalUsd ?? 0); // HL "total_usd"
-    const availCashHL = Number(cashUsd ?? 0);
-    const availPosValHL = Number(positionValue ?? 0);
-
-    console.log("need: drift=", neededUsdcDrift, "hl=", neededUsdcHL);
-    console.log("avail: drift=", availDrift);
-    console.log(
-      "avail total HL=",
-      availTotalHL,
-      "avail cash hl=",
-      availCashHL,
-      "avail positionValue hl=",
-      availPosValHL
-    );
-
-    // If the vault is at a loss ==> share price is lower so user gets less wBTC
-    // It may never be the case that a user tries to withdraw 'too much' USDC
-    const { closePosUsd, fromCash, shortage } = splitHLWithdrawal({
-      totalUsd,
-      cashUsd,
-      positionValue,
-      marginUsed, // <-- pass this
-      effLev,
-      targetRatio: 0.2,
-      withdrawUsd: neededUsdcHL,
-    });
-
-    console.log(
-      "Close position:",
-      closePosUsd,
-      "Withdraw from Cash: ",
-      fromCash,
-      "Shortage: ",
-      shortage
-    );
-
-    // turn USD-notional into percentage of current position
-    function pctFromNotional(closePosUsd, positionValue) {
-      if (
-        !Number.isFinite(closePosUsd) ||
-        !Number.isFinite(positionValue) ||
-        positionValue <= 0
-      )
-        return 0;
-      const pct = (closePosUsd / positionValue) * 100;
-      // clamp and round a bit for CLI
-      return Math.max(0, Math.min(100, Number(pct.toFixed(4))));
-    }
-
-    const closePct = pctFromNotional(closePosUsd, positionValue);
-
-    console.log(
-      `→ Close ${closePct}% of HL position (≈ $${closePosUsd.toFixed(
-        2
-      )} notional), fromCash=${fromCash.toFixed(
-        2
-      )}, shortage=${shortage.toFixed(2)}`
-    );
-
-    if (closePct > 0) {
-      //await step1_closeHL(closePct); // your existing function
-    } else {
-      console.log(
-        "No HL close needed (cash covers withdraw and ratio within band)."
-      );
-    }
+    console.log("Withdraw needed from Drift: ", neededUsdcDrift);
+    console.log("Withdraw needed from HL: ", neededUsdcHL);
 
     // Request withdraw Drift
     await step2_requestWithdrawDrift(neededUsdcDrift);
@@ -587,43 +552,49 @@ async function main() {
     // Withdraw from HL
     await step4_withdrawHL(neededUsdcHL);
 
+    // Record it for later finalization (default 25h; change via --hours or env)
+    await runRunner("init", {
+      reqId,
+      hours: process.env.REDEMPTION_DRIFT || 25,
+      //hours: 0.03,
+      note: "drift+hl withdraw",
+    });
+
+    console.log(`📝 scheduled finalize for ${reqId}`);
+
     console.log("INIT stage done.");
+
     return;
   }
 
   // Stage 2: Finalize (after redemption period)
   if (stage === "finalize") {
-    //await step3_finalizeWithdrawDrift();
+    await step3_finalizeWithdrawDrift();
 
     //const neededUsdcDrift = 8;
-    // await step5_bridgeSolanaToArbitrum(neededUsdcDrift, {
-    //   // Solana key that holds the USDC (source) — if different from default:
-    //   // solPk: process.env.WALLET_SOLANA_SECRET_SOURCE,
+    await step5_bridgeSolanaToArbitrum(neededUsdcDrift, {
+      // Solana key that holds the USDC (source) — if different from default:
+      // solPk: process.env.WALLET_SOLANA_SECRET_SOURCE,
 
-    //   // Destination on Arbitrum = wallet A:
-    //   evmPk: process.env.PK_RECIPIENT_A,
-    //   to: process.env.WALLET_RECIPIENT_A, // optional; see script tweak below
-    // });
+      // Destination on Arbitrum = wallet A:
+      evmPk: process.env.PK_RECIPIENT_A,
+      to: process.env.WALLET_RECIPIENT_A, // optional; see script tweak below
+    });
 
     // const neededUsdcDrift = 2;
-    //await step6_sendUSDC_A_to_owner(neededUsdcDrift);
+    await step6_sendUSDC_A_to_owner(neededUsdcDrift);
     // const amountB = 2;
-    //await step7_sendUSDC_B_to_owner(neededUsdcHL);
+    await step7_sendUSDC_B_to_owner(neededUsdcHL);
 
-    //const amountSwap = neededUsdcDrift + neededUsdcHL;
+    const amountSwap = neededUsdcDrift + neededUsdcHL;
     // Example usage:
-    const amountSwap = 1;
+    // const amountSwap = 1;
     await step8_swapUSDCtoWBTC(amountSwap, {
       to: process.env.VAULT_ADDRESS,
       slippage: 75,
     });
 
     console.log("FINALIZE stage done.");
-
-    try {
-      fs.unlinkSync(STATE_FILE);
-    } catch {}
-
     return;
   }
 
