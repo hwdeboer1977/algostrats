@@ -17,10 +17,10 @@ function fmtDuration(seconds) {
 
 /**
  * Props:
- * - vaultAddress: string (required) -> the VAULT contract address
- * - account?: string (optional)     -> user address; if omitted and using BrowserProvider, component will try getSigner()
- * - rpcUrl?: string (optional)      -> read-only RPC (preferred to avoid wrong-network issues)
- * - pollMs?: number (optional)      -> refresh interval for user data (default 10s)
+ * - vaultAddress: string (required)
+ * - account?: string (optional)
+ * - rpcUrl?: string (optional)
+ * - pollMs?: number (optional, default 10s)
  */
 export default function VaultWithdrawalInfo({
   vaultAddress,
@@ -28,6 +28,8 @@ export default function VaultWithdrawalInfo({
   rpcUrl,
   pollMs = 10_000,
 }) {
+  const CLAIM_BUFFER_SEC = 0; // treat "almost unlocked" as ready if you want
+
   const [addr, setAddr] = useState(account ?? null);
   const [decimals, setDecimals] = useState(18);
   const [redemptionPeriod, setRedemptionPeriod] = useState(0n);
@@ -40,11 +42,12 @@ export default function VaultWithdrawalInfo({
   const [mapPendingShares, setMapPendingShares] = useState(0n);
   const [mapPendingUnlockAt, setMapPendingUnlockAt] = useState(0n);
 
-  // local countdown
+  // local countdown (seconds)
   const [localTimeLeft, setLocalTimeLeft] = useState(0);
 
-  const [totalAssets, setTotalAssets] = useState(0);
-  const [totalSupply, setTotalSupply] = useState(0);
+  // Vault totals (BigInt)
+  const [totalAssets, setTotalAssets] = useState(0n);
+  const [totalSupply, setTotalSupply] = useState(0n);
 
   // env + contract sanity
   const [chainId, setChainId] = useState(null);
@@ -65,11 +68,12 @@ export default function VaultWithdrawalInfo({
       contractRef.current = null;
 
       const fallbackRpc =
-        rpcUrl || import.meta.env.VITE_ARBITRUM_ALCHEMY_MAINNET;
+        rpcUrl ||
+        (import.meta?.env && import.meta.env.VITE_ARBITRUM_ALCHEMY_MAINNET);
 
       const provider = fallbackRpc
         ? new ethers.JsonRpcProvider(fallbackRpc)
-        : window.ethereum
+        : typeof window !== "undefined" && window.ethereum
         ? new ethers.BrowserProvider(window.ethereum)
         : null;
 
@@ -117,7 +121,7 @@ export default function VaultWithdrawalInfo({
     })();
   }, [vaultAddress, rpcUrl, account]);
 
-  // Load static values (decimals, redemptionPeriod)
+  // Load static values (decimals, redemptionPeriod, totals)
   useEffect(() => {
     (async () => {
       const c = contractRef.current;
@@ -130,36 +134,26 @@ export default function VaultWithdrawalInfo({
       }
 
       try {
-        // If ABI or contract doesn't have the function, catch and show 0
         const rp = await c.redemptionPeriod();
         setRedemptionPeriod(rp);
       } catch (e) {
-        console.warn(
-          "redemptionPeriod() unavailable; defaulting to 0. Reason:",
-          e
-        );
+        console.warn("redemptionPeriod() unavailable; defaulting to 0.", e);
         setRedemptionPeriod(0n);
       }
+
       try {
-        // If ABI or contract doesn't have the function, catch and show 0
         const assets = await c.totalAssets();
-        setTotalAssets(assets);
+        setTotalAssets(assets ?? 0n);
       } catch (e) {
-        console.warn(
-          "redemptionPeriod() unavailable; defaulting to 0. Reason:",
-          e
-        );
+        console.warn("totalAssets() unavailable; defaulting to 0.", e);
         setTotalAssets(0n);
       }
+
       try {
-        // If ABI or contract doesn't have the function, catch and show 0
         const supply = await c.totalSupply();
-        setTotalSupply(supply);
+        setTotalSupply(supply ?? 0n);
       } catch (e) {
-        console.warn(
-          "redemptionPeriod() unavailable; defaulting to 0. Reason:",
-          e
-        );
+        console.warn("totalSupply() unavailable; defaulting to 0.", e);
         setTotalSupply(0n);
       }
     })();
@@ -172,7 +166,7 @@ export default function VaultWithdrawalInfo({
       const c = contractRef.current;
       if (!c || !addr || !contractOk) return;
       try {
-        const [shares, unlockAt, timeLeft] = await c.pendingOf(addr);
+        const [shares, unlockAt /*, timeLeft*/] = await c.pendingOf(addr);
         setPoShares(shares);
         setPoUnlockAt(unlockAt);
 
@@ -197,13 +191,29 @@ export default function VaultWithdrawalInfo({
     return () => clearInterval(interval);
   }, [addr, vaultAddress, pollMs, contractOk]);
 
+  // ---- Derived unlock fields (compute before countdown effect) ----
+  const unlockAtToShow = useMemo(() => {
+    const v = mapPendingUnlockAt ?? 0n;
+    return v > 0n ? v : poUnlockAt ?? 0n;
+  }, [mapPendingUnlockAt, poUnlockAt]);
+
+  const unlockAtSec = useMemo(
+    () => Number(unlockAtToShow || 0n),
+    [unlockAtToShow]
+  );
+
+  const unlockDate = useMemo(
+    () => (unlockAtSec > 0 ? new Date(unlockAtSec * 1000) : null),
+    [unlockAtSec]
+  );
+
   // Smooth 1s countdown from unlockAt
   useEffect(() => {
     const id = setInterval(() => {
       setLocalTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
     }, 1000);
     return () => clearInterval(id);
-  }, [poUnlockAt]);
+  }, [unlockAtSec]);
 
   // Derived display values
   const pendingSharesToShow = useMemo(() => {
@@ -213,7 +223,6 @@ export default function VaultWithdrawalInfo({
 
   // pending wBTC = user's pending shares * (totalAssets / totalSupply)
   // All values are BigInt; result is in asset units (wBTC has 8 decimals).
-
   const pendingWbtcRaw = useMemo(() => {
     if (!pendingSharesToShow || totalSupply === 0n) return 0n;
     return (pendingSharesToShow * totalAssets) / totalSupply;
@@ -224,15 +233,13 @@ export default function VaultWithdrawalInfo({
     [pendingWbtcRaw]
   );
 
-  const unlockAtToShow = useMemo(() => {
-    const v = mapPendingUnlockAt ?? 0n;
-    return v > 0n ? v : poUnlockAt ?? 0n;
-  }, [mapPendingUnlockAt, poUnlockAt]);
-
-  const unlockDate = useMemo(() => {
-    const ts = Number(unlockAtToShow || 0n) * 1000;
-    return ts > 0 ? new Date(ts) : null;
-  }, [unlockAtToShow]);
+  // Claimability & dynamic labels
+  const nowSec = Math.floor(Date.now() / 1000);
+  const isClaimable =
+    unlockAtSec > 0 && nowSec + CLAIM_BUFFER_SEC >= unlockAtSec;
+  const sharesLabel = isClaimable ? "Ready to claim (shares)" : "Queued shares";
+  const wbtcLabel = isClaimable ? "Claimable wBTC" : "Estimated wBTC";
+  const timeLabel = isClaimable ? "Ready" : fmtDuration(localTimeLeft);
 
   const formattedPendingShares = useMemo(
     () => formatUnits(pendingSharesToShow || 0n, decimals),
@@ -245,7 +252,19 @@ export default function VaultWithdrawalInfo({
         Vault: {vaultAddress}{" "}
         {chainId ? <span className="opacity-60">• chain {chainId}</span> : null}
       </div>
-      <h2 className="text-lg font-semibold">Withdrawal status</h2>
+
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Withdrawal status</h2>
+        <span
+          className={`text-xs px-2 py-1 rounded-full ${
+            isClaimable
+              ? "bg-green-100 text-green-700"
+              : "bg-amber-100 text-amber-700"
+          }`}
+        >
+          {isClaimable ? "Claimable" : "Queued"}
+        </span>
+      </div>
 
       {!contractOk ? (
         <div className="text-sm text-red-600">
@@ -261,20 +280,18 @@ export default function VaultWithdrawalInfo({
             </div>
 
             <div className="font-medium">
-              Pending shares: {formattedPendingShares}
+              {sharesLabel}: {formattedPendingShares}
             </div>
 
             <div className="font-medium">
-              Pending wBTC: {formattedPendingWbtc}
+              {wbtcLabel}: {formattedPendingWbtc}
             </div>
 
             <div className="font-medium">
               Unlocks at: {unlockDate ? unlockDate.toLocaleString() : "—"}
             </div>
 
-            <div className="font-medium">
-              Time left: {fmtDuration(localTimeLeft)}
-            </div>
+            <div className="font-medium">Time left: {timeLabel}</div>
           </div>
 
           {!addr && (
