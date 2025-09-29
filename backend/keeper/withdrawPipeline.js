@@ -51,7 +51,53 @@ function run(cmd, args = [], opts = {}) {
   });
 }
 
-// Function to get arguments
+// run a Node script and capture stdout/stderr
+function runNode(file, args = [], opts = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [file, ...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...(opts.env || {}) },
+      cwd: opts.cwd || undefined,
+    });
+    let out = "",
+      err = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (c) => (out += c));
+    child.stderr.on("data", (c) => (err += c));
+    child.once("error", reject);
+    child.once("exit", (code) =>
+      code === 0 ? resolve(out) : reject(new Error(err || `exit ${code}`))
+    );
+  });
+}
+
+// normalize getAddress for ethers v5/v6
+function normalizeAddressMaybe(addr) {
+  if (!addr) return null;
+  const s = String(addr)
+    .trim()
+    .replace(/^["']|["']$/g, "");
+  try {
+    if (typeof ethers.getAddress === "function") return ethers.getAddress(s); // v6
+    return ethers.utils.getAddress(s); // v5
+  } catch {
+    return null;
+  }
+}
+
+// parse a base58-ish Solana tx signature from stdout
+function parseTxSig(s) {
+  // prefer an explicit "txSignature: <sig>" line if your mjs prints it
+  const m1 = s.match(/txSignature:\s*([1-9A-HJ-NP-Za-km-z]{43,88})/);
+  if (m1) return m1[1];
+
+  // fallback: grab the first base58-looking blob that is NOT obviously a 32- or 44-char wallet you printed earlier
+  const m2 = s.match(/([1-9A-HJ-NP-Za-km-z]{43,88})/);
+  return m2 ? m2[1] : null;
+}
+
+// Get a CLI arg
 function getArg(name, def = undefined) {
   const prefix = `--${name}=`;
   const raw = process.argv.find((a) => a.startsWith(prefix));
@@ -59,8 +105,8 @@ function getArg(name, def = undefined) {
 }
 
 // read args
-//const stage = getArg("stage", "init"); // "--stage=init"
-const usdcHuman = getArg("usdc"); // "--usdc=123.45" (string or undefined)
+const usdcHumanRaw = getArg("usdc"); // "--usdc=123.45"
+const usdcHuman = usdcHumanRaw != null ? Number(usdcHumanRaw) : undefined;
 
 function runRunner(cmd, argsObj = {}) {
   const args = [
@@ -76,34 +122,13 @@ function runRunner(cmd, argsObj = {}) {
   });
 }
 
-// run a Node script and capture stdout
-function runNode(file, args = []) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [file, ...args], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-    let out = "",
-      err = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (c) => (out += c));
-    child.stderr.on("data", (c) => (err += c));
-    child.once("error", reject);
-    child.once("exit", (code) =>
-      code === 0 ? resolve(out) : reject(new Error(err || `exit ${code}`))
-    );
-  });
-}
-
 // Get balance of USDC in Drift's vault
 function parseBalanceUsd(text) {
   const m = /Balance\s*\(USD\)\s*:\s*([-\d.,]+)/i.exec(text);
   return m ? Number(m[1].replace(/,/g, "")) : null;
 }
 
-// Get balance and positions Hyperliquid
-// put near your other utils
+// Parse HL JSON summary (from Python stdout)
 function parseHlUsd(out) {
   const defaults = {
     totalUsd: 0,
@@ -148,7 +173,7 @@ function parseHlUsd(out) {
   return { totalUsd: eq, cashUsd, posPNL, positionValue, marginUsed, effLev };
 }
 
-// --- NEW: single helper to collect both numbers ---
+// --- Read Drift + HL positions
 async function readPositions() {
   const driftScript = path.resolve(
     __dirname,
@@ -158,9 +183,6 @@ async function readPositions() {
   const balanceUsd = parseBalanceUsd(driftOut);
 
   const hlRes = await runPython("summary");
-  const hlStdout =
-    hlRes && typeof hlRes.stdout === "string" ? hlRes.stdout : "";
-
   const { totalUsd, cashUsd, posPNL, positionValue, marginUsed, effLev } =
     parseHlUsd(hlRes);
 
@@ -176,23 +198,22 @@ async function readPositions() {
 }
 
 // Keep HL at target ratio r after withdrawing W USD.
-// policy “keep margin ratio = same% after the withdraw.”
 function splitHLWithdrawal({
   totalUsd, // E
   cashUsd, // C
-  positionValue, // PV (used only to cap)
-  marginUsed, // M0  <-- add this
+  positionValue, // PV
+  marginUsed, // M0
   effLev, // L
   targetRatio, // r
   withdrawUsd, // W
 }) {
-  const E = totalUsd,
-    C = cashUsd,
-    PV = positionValue,
-    M0 = marginUsed;
-  const L = effLev || 10,
-    r = targetRatio,
-    W = withdrawUsd;
+  const E = Number(totalUsd),
+    C = Number(cashUsd),
+    PV = Number(positionValue),
+    M0 = Number(marginUsed);
+  const L = Number(effLev) || 10;
+  const r = Number(targetRatio);
+  const W = Number(withdrawUsd);
 
   for (const [k, v] of Object.entries({ E, C, PV, M0, L, r, W })) {
     if (!Number.isFinite(v))
@@ -200,13 +221,11 @@ function splitHLWithdrawal({
   }
   if (W > E + 1e-9) throw new Error(`withdraw ${W} > total ${E}`);
 
-  // Target margin after withdraw: r * (E - W)
   const Mtarget = r * (E - W);
-  const needRatio = Math.max(0, M0 - Mtarget); // margin to release for ratio
-  const needCash = Math.max(0, W - C); // margin to release for cash deficit
+  const needRatio = Math.max(0, M0 - Mtarget);
+  const needCash = Math.max(0, W - C);
   const deltaM = Math.max(needRatio, needCash);
 
-  // Close notional equal to margin to release * leverage, capped by current notional
   const closePosUsd = Math.min(PV, deltaM * L);
   const fromCash = Math.min(W, C);
   const freedCash = closePosUsd / L;
@@ -215,22 +234,50 @@ function splitHLWithdrawal({
   return { closePosUsd, fromCash, shortage };
 }
 
-/** ---------- CLI flags we will need ----------
---stage=init | finalize
-... (your comment block unchanged)
----------------------------------------------------------------- */
+// ---- ERC20 + SPL balance readers ----
+const ERC20_ABI_MIN = [
+  "function balanceOf(address) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+];
 
-// Write status of withdrawal to JSON file
-const STATE_FILE = path.join(__dirname, "withdraw_state.json");
+// EVM (Arbitrum) ERC20 balance
+async function readErc20Balance({ rpc, token, wallet }) {
+  const { ethers } = require("ethers");
+  const provider = new ethers.JsonRpcProvider(rpc); // v6
+  const erc = new ethers.Contract(token, ERC20_ABI_MIN, provider);
+  const [raw, dec] = await Promise.all([erc.balanceOf(wallet), erc.decimals()]);
+  return Number(raw) / 10 ** Number(dec);
+}
 
-// Step 1: Close a position on Hyperliquid, default 10%
-// Pass closePct explicitly, or override via --closePct / --closeSize in CLI
-// const closePctInput = 100;
-// async function step1_closeHL(closePct = closePctInput) {
+// Solana SPL USDC balance (Associated Token Account)
+async function readSplBalance({ rpc, owner, mint }) {
+  const { Connection, PublicKey } = require("@solana/web3.js");
+  const {
+    getAssociatedTokenAddress,
+    getAccount,
+  } = require("@solana/spl-token");
+
+  const conn = new Connection(rpc, "confirmed");
+  const ownerPk = new PublicKey(owner);
+  const mintPk = new PublicKey(mint);
+  const ata = await getAssociatedTokenAddress(mintPk, ownerPk, false);
+  try {
+    const acct = await getAccount(conn, ata, "confirmed");
+    // acct.amount is bigint (raw, with mint decimals)
+    // You can fetch mint decimals if you want exact; USDC=6 on Solana:
+    const dec = 6;
+    return Number(acct.amount) / 10 ** dec;
+  } catch (e) {
+    // no ATA -> zero balance
+    return 0;
+  }
+}
+
+// Step 1: Hyperliquid partial/full close
 async function step1_closeHL(closePct) {
   const coin = getArg("coin", "ETH");
   const cliPct = getArg("closePct"); // optional CLI override
-  const size = getArg("closeSize"); // alternative: absolute size
+  const size = getArg("closeSize"); // absolute size alternative
   const slip = getArg("closeSlippage", "0.01");
 
   const pct = cliPct ?? closePct;
@@ -250,16 +297,19 @@ async function step1_closeHL(closePct) {
   await run("python", args);
 }
 
-// Function to request/Initiate withdraw from Drift (24 hour redemption period)
+// Step 2: Request/Initiate withdraw from Drift (24h redemption)
 async function step2_requestWithdrawDrift(amountDrift) {
-  const amount = amountDrift;
+  const amount = Number(amountDrift);
+  if (!Number.isFinite(amount) || amount <= 0)
+    throw new Error("step2_requestWithdrawDrift: invalid amount");
+
   const driftVault = process.env.DRIFT_VAULT_ADDRESS;
   const driftAuthority = process.env.DRIFT_VAULT_AUTHORITY;
   console.log("▶ Step 2: Drift request withdraw…");
   const args = [
     P.DRIFT_REQUEST_WD,
     "--usdc",
-    amount,
+    String(amount),
     "--vault-address",
     driftVault,
     "--authority",
@@ -272,22 +322,34 @@ async function step2_requestWithdrawDrift(amountDrift) {
   await run("node", args, { cwd: path.dirname(P.DRIFT_REQUEST_WD) });
 }
 
-// Function to finalize the withdrawal from Drift (after 24 hours)
+// Step 3: Finalize withdrawal from Drift (after 24h) — capture tx sig
 async function step3_finalizeWithdrawDrift() {
   console.log("▶ Step 3: Drift finalize withdraw (after redemption delay)…");
-  const args = [P.DRIFT_WD, "withdraw"];
+  const out = await runNode(P.DRIFT_WD, ["withdraw"], {
+    cwd: path.dirname(P.DRIFT_WD),
+  });
+  // Expect your vaultNew.mjs to print:  txSignature: <sig>
+  const sig = parseTxSig(out || "");
+  if (!sig) {
+    console.error("Drift finalize stdout:\n", out);
+    throw new Error(
+      "Could not detect a transaction signature from finalize output."
+    );
+  }
+  console.log("✅ Drift finalize txSignature:", sig);
   console.log(
-    "   node",
-    args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ")
+    "🔎 Explorer:",
+    `https://solscan.io/tx/${sig}  (add ?cluster=devnet for devnet)`
   );
-  await run("node", args, { cwd: path.dirname(P.DRIFT_WD) }); // <-- fixed reference
 }
 
-// Function ot withdraw USDC from Hyperliquid
+// Step 4: Withdraw USDC from Hyperliquid
 async function step4_withdrawHL(amountHL, opts = {}) {
-  if (amountHL == null)
-    throw new Error("step4_withdrawHL: amountHL is required (e.g., 100)");
-  const args = [P.HL_WITHDRAW, String(amountHL)];
+  const amt = Number(amountHL);
+  if (!Number.isFinite(amt) || amt <= 0)
+    throw new Error("step4_withdrawHL: amountHL is required and must be > 0");
+
+  const args = [P.HL_WITHDRAW, String(amt)];
   if (opts.pk) args.push("--pk", opts.pk);
   if (opts.dest) args.push("--dest", opts.dest);
   if (opts.config) args.push("--config", opts.config);
@@ -301,33 +363,34 @@ async function step4_withdrawHL(amountHL, opts = {}) {
   await run("python", args);
 }
 
-// Function to bridge back from Solana to Arbitrum
+// Step 5: Bridge Solana → Arbitrum
 async function step5_bridgeSolanaToArbitrum(amount, opts = {}) {
-  if (amount == null)
-    throw new Error("step5_bridgeSolanaToArbitrum: amount is required");
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0)
+    throw new Error(
+      "step5_bridgeSolanaToArbitrum: amount is required and must be > 0"
+    );
 
   const script = P.LIFI_BRIDGE;
-  const args = [script, String(amount)];
+  const args = [script, String(amt)];
 
-  // Build env for the child process
   const env = { ...process.env };
-  // Source signer on Solana (who holds USDC to send):
   if (opts.solPk) env.WALLET_SOLANA_SECRET = opts.solPk;
-  // Destination EVM wallet (wallet B):
   if (opts.evmPk) env.WALLET_SECRET = opts.evmPk; // EVM private key
-  if (opts.to) env.EVM_TO_ADDRESS = opts.to; // optional explicit toAddress override
+  if (opts.to) env.EVM_TO_ADDRESS = opts.to;
 
   console.log(
     "▶ Step 5 (Sol→Arb bridge):",
-    ["node", script, String(amount)].join(" ")
+    ["node", script, String(amt)].join(" ")
   );
   await run("node", args, { cwd: path.dirname(script), env });
 }
 
-// Function to send USDC from wallet A to the vault
+// Step 6: Send USDC from wallet A to vault
 async function step6_sendUSDC_A_to_owner(amountA = undefined, opts = {}) {
   const amountFromCli = getArg("sendA");
-  const amount = amountA ?? amountFromCli ?? process.env.AMOUNT ?? null;
+  const chosen = amountA ?? amountFromCli ?? process.env.AMOUNT ?? null;
+  const amount = chosen != null ? Number(chosen) : null;
 
   const args = [P.SEND_USDC_JS];
   if (amount !== null) args.push(String(amount));
@@ -341,10 +404,11 @@ async function step6_sendUSDC_A_to_owner(amountA = undefined, opts = {}) {
   await run("node", args, { env, cwd: path.dirname(P.SEND_USDC_JS) });
 }
 
-// Function to send USDC from wallet B to the vault
+// Step 7: Send USDC from wallet B to vault
 async function step7_sendUSDC_B_to_owner(amountB = undefined, opts = {}) {
   const amountFromCli = getArg("sendB");
-  const amount = amountB ?? amountFromCli ?? process.env.AMOUNT ?? null;
+  const chosen = amountB ?? amountFromCli ?? process.env.AMOUNT ?? null;
+  const amount = chosen != null ? Number(chosen) : null;
 
   const args = [P.SEND_USDC_PY];
   if (amount !== null) args.push(String(amount));
@@ -360,71 +424,82 @@ async function step7_sendUSDC_B_to_owner(amountB = undefined, opts = {}) {
   await run("python", args, { env, cwd: path.dirname(P.SEND_USDC_PY) });
 }
 
-// Function to swap back from USDC to wBTC and send to vault (or custom recipient)
+// Step 8: Swap USDC → WBTC and send to vault (or recipient)
 async function step8_swapUSDCtoWBTC(amountSwap = undefined, opts = {}) {
-  const amountFromCli = getArg("swapAmount"); // e.g. --swapAmount=123.45
-  const toFromCli = getArg("to"); // e.g. --to=0xVault...
-  const slippageFromCli = getArg("slippage"); // e.g. --slippage=75
+  const amountFromCli = getArg("swapAmount");
+  const toFromCli = getArg("to");
+  const slippageFromCli = getArg("slippage");
 
-  const amount = amountSwap ?? amountFromCli ?? null;
-  if (amount == null) {
-    console.log(
-      "▶ Step 8: No amount provided; skipping swap to avoid accidental default."
-    );
+  const chosen = amountSwap ?? amountFromCli ?? null;
+  const amount = chosen != null ? Number(chosen) : null;
+  if (!(amount > 0)) {
+    console.log("▶ Step 8: No valid amount provided; skipping swap.");
     return;
   }
 
-  // Resolve candidate recipient
-  let toResolved = opts.to ?? toFromCli ?? process.env.VAULT_ADDRESS ?? null;
-
-  // ✅ Sanitize + validate (prevents the swap script from logging the fallback warning)
-  if (toResolved) {
+  // v6-safe normalization
+  function normalizeAddressMaybe(addr) {
+    if (!addr) return null;
+    const cleaned = String(addr)
+      .replace(/^[\s"'`]+|[\s"'`]+$/g, "")
+      .trim();
     try {
-      toResolved = ethers.utils.getAddress(
-        String(toResolved)
-          .trim()
-          .replace(/^["']|["']$/g, "")
-      );
+      return typeof ethers.getAddress === "function"
+        ? ethers.getAddress(cleaned)
+        : ethers.utils.getAddress(cleaned);
     } catch {
-      console.warn(
-        "⚠️ step8: invalid --to provided. Omitting recipient so swap falls back to owner."
-      );
-      toResolved = null;
+      return null;
     }
   }
+
+  let toResolved = opts.to ?? toFromCli ?? process.env.VAULT_ADDRESS ?? null;
+  toResolved = normalizeAddressMaybe(toResolved);
 
   const slippage = opts.slippage ?? slippageFromCli ?? process.env.SLIPPAGE_BPS;
 
   const args = [P.SWAP_USDC_WBTC, String(amount)];
-  if (slippage) args.push(`--slippage=${slippage}`);
-  if (toResolved) args.push(`--to=${toResolved}`);
+  if (slippage) args.push("--slippage", String(slippage));
+  if (toResolved) {
+    args.push("--to", toResolved); // <-- space form
+    args.push("--allowContractRecipient=1"); // <-- allow contract dests
+  }
 
   const env = { ...process.env, AMOUNT: String(amount) };
-  console.log(
-    `▶ Step 8: Uniswap swap USDC -> WBTC (amount=${amount}${
-      toResolved ? `, to=${toResolved}` : ""
-    })…`
-  );
-  await run("node", args, { env, cwd: path.dirname(P.SWAP_USDC_WBTC) });
+
+  // DEBUG: see exactly what we send
+  console.log("[step8] argv →", args.map((s) => JSON.stringify(s)).join(" "));
+
+  await run("node", args, {
+    env,
+    cwd: path.dirname(P.SWAP_USDC_WBTC),
+    shell: false, // <-- critical on Windows
+  });
 }
 
-async function withdrawPerProtocol(usdcHuman) {
-  // Determining how much to withdraw from both protocols
+async function withdrawPerProtocol(usdcHumanInput) {
   console.log("Determining how much to withdraw from both protocols");
 
-  // Shares to take out of protocols
-  const SHARE_DRIFT = process.env.SHARE_DRIFT;
-  const SHARE_HL = process.env.SHARE_HL;
+  // Shares to take out of protocols (coerce + validate)
+  const SHARE_DRIFT = Number(process.env.SHARE_DRIFT ?? 0.5);
+  const SHARE_HL = Number(process.env.SHARE_HL ?? 0.5);
+  if (!Number.isFinite(SHARE_DRIFT) || !Number.isFinite(SHARE_HL))
+    throw new Error("Invalid SHARE_DRIFT/SHARE_HL env");
+  const sumShares = SHARE_DRIFT + SHARE_HL;
+  if (Math.abs(sumShares - 1) > 1e-6) {
+    console.warn(`⚠️ SHARE_DRIFT + SHARE_HL = ${sumShares} ≠ 1; normalizing.`);
+  }
+  // normalize in case of drift
+  const driftShare = SHARE_DRIFT / sumShares;
+  const hlShare = SHARE_HL / sumShares;
 
-  // Read current positions/balances (Drift + HL)
   const {
-    balanceUsd, // Balance USD in Drift vault
-    totalUsd, // Total balance USD in HL
-    cashUsd, // Total available USD in HL
-    posPNL, // Unrealized PNL
-    positionValue, // Position value
-    marginUsed, // Margin used = positionValue/leverage
-    effLev, // leverage
+    balanceUsd, // Drift vault USD
+    totalUsd, // HL total equity
+    cashUsd, // HL cash
+    posPNL,
+    positionValue,
+    marginUsed,
+    effLev,
   } = await readPositions();
 
   console.log(
@@ -437,13 +512,11 @@ async function withdrawPerProtocol(usdcHuman) {
     effLev
   );
 
-  // Calculate amount USDC per protocol
-  const neededUsdcDrift = usdcHuman * SHARE_DRIFT;
-  const neededUsdcHL = usdcHuman * SHARE_HL;
+  const neededUsdcDrift = Number(usdcHumanInput) * driftShare;
+  const neededUsdcHL = Number(usdcHumanInput) * hlShare;
 
-  // Available balances (from readers above)
-  const availDrift = Number(balanceUsd ?? 0); // Drift "Balance (USD)"
-  const availTotalHL = Number(totalUsd ?? 0); // HL "total_usd"
+  const availDrift = Number(balanceUsd ?? 0);
+  const availTotalHL = Number(totalUsd ?? 0);
   const availCashHL = Number(cashUsd ?? 0);
   const availPosValHL = Number(positionValue ?? 0);
 
@@ -458,13 +531,11 @@ async function withdrawPerProtocol(usdcHuman) {
     availPosValHL
   );
 
-  // If the vault is at a loss ==> share price is lower so user gets less wBTC
-  // It may never be the case that a user tries to withdraw 'too much' USDC
   const { closePosUsd, fromCash, shortage } = splitHLWithdrawal({
     totalUsd,
     cashUsd,
     positionValue,
-    marginUsed, // <-- pass this
+    marginUsed,
     effLev,
     targetRatio: 0.2,
     withdrawUsd: neededUsdcHL,
@@ -479,7 +550,6 @@ async function withdrawPerProtocol(usdcHuman) {
     shortage
   );
 
-  // turn USD-notional into percentage of current position
   function pctFromNotional(closePosUsd, positionValue) {
     if (
       !Number.isFinite(closePosUsd) ||
@@ -488,7 +558,6 @@ async function withdrawPerProtocol(usdcHuman) {
     )
       return 0;
     const pct = (closePosUsd / positionValue) * 100;
-    // clamp and round a bit for CLI
     return Math.max(0, Math.min(100, Number(pct.toFixed(4))));
   }
 
@@ -502,8 +571,9 @@ async function withdrawPerProtocol(usdcHuman) {
     )}`
   );
 
+  // If you want the close to actually run, uncomment:
   if (closePct > 0) {
-    //await step1_closeHL(closePct); // your existing function
+    await step1_closeHL(closePct);
   } else {
     console.log(
       "No HL close needed (cash covers withdraw and ratio within band)."
@@ -516,29 +586,26 @@ async function withdrawPerProtocol(usdcHuman) {
 /** ---------- Orchestration ---------- */
 async function main() {
   const stage = getArg("stage", "init");
+  //const stage = getArg("stage", "finalize");
   console.log(">>> PIPELINE START");
   console.log(">>> __filename:", __filename);
   console.log(">>> cwd:", process.cwd());
   console.log(">>> argv:", process.argv.slice(2));
   console.log(">>> Stage =", stage);
 
-  // Unique id
   const reqId = getArg("reqId", `req_${Date.now()}`);
   console.log(reqId);
 
-  // Initial stage
   if (stage === "init") {
     console.log("Starting the withdrawal process");
 
-    if (!usdcHuman) {
-      console.error("Provide --usdc=<human>");
+    if (!(usdcHuman > 0)) {
+      console.error("Provide --usdc=<amount>, e.g., --usdc=123.45");
       process.exit(1);
     }
 
-    // Amount of USDC needed
     console.log("USDC needed:", usdcHuman);
 
-    // Determine how much to withdraw from both protocols
     const { neededUsdcDrift, neededUsdcHL } = await withdrawPerProtocol(
       usdcHuman
     );
@@ -546,51 +613,87 @@ async function main() {
     console.log("Withdraw needed from Drift: ", neededUsdcDrift);
     console.log("Withdraw needed from HL: ", neededUsdcHL);
 
-    // Request withdraw Drift
     await step2_requestWithdrawDrift(neededUsdcDrift);
-
-    // Withdraw from HL
     await step4_withdrawHL(neededUsdcHL);
 
-    // Record it for later finalization (default 25h; change via --hours or env)
     await runRunner("init", {
       reqId,
       hours: process.env.REDEMPTION_DRIFT || 25,
-      //hours: 0.03,
       note: "drift+hl withdraw",
     });
 
     console.log(`📝 scheduled finalize for ${reqId}`);
-
     console.log("INIT stage done.");
-
     return;
   }
 
-  // Stage 2: Finalize (after redemption period)
   if (stage === "finalize") {
     await step3_finalizeWithdrawDrift();
 
-    //const neededUsdcDrift = 8;
-    await step5_bridgeSolanaToArbitrum(neededUsdcDrift, {
-      // Solana key that holds the USDC (source) — if different from default:
-      // solPk: process.env.WALLET_SOLANA_SECRET_SOURCE,
+    // Read live balances
+    const solRpc = process.env.SOLANA_RPC;
+    const solOwner = process.env.DRIFT_VAULT_AUTHORITY; // Solana pubkey that receives USDC
+    const usdcMintSol =
+      process.env.USDC_MINT_SOL ||
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-      // Destination on Arbitrum = wallet A:
-      evmPk: process.env.PK_RECIPIENT_A,
-      to: process.env.WALLET_RECIPIENT_A, // optional; see script tweak below
+    const solUsdc = await readSplBalance({
+      rpc: solRpc,
+      owner: solOwner,
+      mint: usdcMintSol,
     });
 
-    // const neededUsdcDrift = 2;
-    await step6_sendUSDC_A_to_owner(neededUsdcDrift);
-    // const amountB = 2;
-    await step7_sendUSDC_B_to_owner(neededUsdcHL);
+    console.log("Balance on Solana wallet: ", solUsdc);
 
-    const amountSwap = neededUsdcDrift + neededUsdcHL;
-    // Example usage:
-    // const amountSwap = 1;
-    await step8_swapUSDCtoWBTC(amountSwap, {
-      to: process.env.VAULT_ADDRESS,
+    // (Keep post-finalize steps commented until you wire exact amounts)
+    // const neededUsdcDrift = 8;
+    const neededUsdcDrift = solUsdc;
+    await step5_bridgeSolanaToArbitrum(neededUsdcDrift, {
+      evmPk: process.env.PK_RECIPIENT_A,
+      to: process.env.WALLET_RECIPIENT_A,
+    });
+
+    // Read balances Arbitrum
+    const arbRpc = process.env.ARBITRUM_ALCHEMY_MAINNET;
+    const usdcArb =
+      process.env.USDC_ADDRESS || "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+    const walletA = process.env.WALLET_RECIPIENT_A; // bridge destination
+    const walletB = process.env.WALLET_RECIPIENT_B; // HL withdraw destination
+
+    const arbUsdcA = await readErc20Balance({
+      rpc: arbRpc,
+      token: usdcArb,
+      wallet: walletA,
+    });
+    const arbUsdcB = await readErc20Balance({
+      rpc: arbRpc,
+      token: usdcArb,
+      wallet: walletB,
+    });
+
+    console.log("USDC on wallet A: ", arbUsdcA);
+    console.log("USDC on wallet B: ", arbUsdcB);
+
+    await step6_sendUSDC_A_to_owner(arbUsdcA);
+    await step7_sendUSDC_B_to_owner(arbUsdcB);
+
+    const OWNER_ADDRESS = process.env.WALLET_ADDRESS;
+    const VAULT_ADDRESS = process.env.VAULT_ADDRESS;
+
+    console.log("OWNER_ADDRESS: ", OWNER_ADDRESS);
+    console.log("VAULT_ADDRESS: ", VAULT_ADDRESS);
+
+    const arbUsdcOwner = await readErc20Balance({
+      rpc: arbRpc,
+      token: usdcArb,
+      wallet: OWNER_ADDRESS,
+    });
+    console.log("USDC to swap on Arbitrum: ", arbUsdcOwner);
+
+    //const arbUsdcOwner = neededUsdcDrift + neededUsdcHL;
+    await step8_swapUSDCtoWBTC(arbUsdcOwner, {
+      to: VAULT_ADDRESS,
+      //to: OWNER_ADDRESS,
       slippage: 75,
     });
 
@@ -599,7 +702,7 @@ async function main() {
   }
 
   throw new Error(
-    `Unknown --stage=${stage}. Use --stage=calc --stage=init or --stage=finalize`
+    `Unknown --stage=${stage}. Use --stage=init or --stage=finalize`
   );
 }
 
