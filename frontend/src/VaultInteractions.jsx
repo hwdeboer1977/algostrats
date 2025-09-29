@@ -94,7 +94,7 @@ export default function VaultInteractions() {
           disabled={!connected || v.loading}
           onClick={() => v.depositAssets(amount)}
         >
-          Deposit
+          Deposit (assets)
         </button>
 
         <button
@@ -102,7 +102,7 @@ export default function VaultInteractions() {
           disabled={!connected || v.loading}
           onClick={() => v.initWithdraw(amount)}
         >
-          Initiate withdraw
+          Initiate withdraw (shares)
         </button>
 
         <button
@@ -111,14 +111,6 @@ export default function VaultInteractions() {
           onClick={() => v.withdrawAssets(amount)}
         >
           Withdraw (assets)
-        </button>
-
-        <button
-          className="btn btn-secondary"
-          disabled={!connected || v.loading}
-          onClick={() => v.redeemShares(amount)}
-        >
-          Redeem (shares)
         </button>
 
         <div className="p-6">
