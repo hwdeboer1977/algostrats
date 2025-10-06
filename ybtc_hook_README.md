@@ -167,37 +167,6 @@ The arb’s profit comes from **pool mispricing**, not vault dilution.
 
 ---
 
-## ⚡ Wave 1 – Bootstrapping Liquidity (0 → $250 k TVL)
-
-You don’t “give away” yBTC — you **pay for early liquidity** with a structured, temporary rewards plan.
-
-### 1️⃣ Liquidity Mining
-
-- Allocate a small emissions pool, e.g. **5 000 yBTC (≈5 % supply)** for a 6‑week bootstrap phase.
-- Distribute to LPs pro‑rata to their pool share:
-  ```
-  reward/day = (user_TVL / total_TVL) × yBTC_pool / duration_days
-  ```
-- Stream via a Merkle or Sablier contract for transparency.
-
-### 2️⃣ Vault Yield Sharing
-
-- Route part of vault yield (≈20 %) to LPs for real yield + trading fees.
-
-### 3️⃣ Grant / Co‑Incentives
-
-- Apply for Crecimiento × Uniswap micro‑grants to fund early liquidity rebates in **USDC**.
-
-| Week | Incentive Type    | Description                  | Budget |
-| ---- | ----------------- | ---------------------------- | ------ |
-| 1–2  | Launch & Airdrop  | Early LP snapshot – 500 yBTC | 10 %   |
-| 3–4  | Streaming Rewards | Continuous 3 500 yBTC drip   | 70 %   |
-| 5–6  | Fee Boost         | Double swap fee rebate       | 20 %   |
-
-> 🎯 **Goal:** attract first $250 k TVL, prove peg stability, sunset emissions.
-
----
-
 ## 🛡️ Safeguards
 
 - Clamp NAV change ≤ 10 bps/block.
@@ -205,24 +174,6 @@ You don’t “give away” yBTC — you **pay for early liquidity** with a stru
 - Cap deviation in fee curve (±300 bps).
 - Pause hook on feed failure.
 - Keep mint/redeem fees symmetric (or zero).
-
----
-
-## 💼 Investment Case
-
-### Why VCs Care
-
-- **New DeFi primitive:** a generic “NAV‑aware pricing layer” for all ERC‑4626 vaults.
-- **Huge addressable market:** $20 B+ yield tokens need liquidity.
-- **Revenue model:** hook fees + vault mgmt + relayer share.
-- **Alignment:** showcases Uniswap v4 infra, supports real yield.
-- **Scalability:** extend to LRTs, stETH, rsETH, sDAI, cross‑chain Unichain.
-
-Example revenue model:
-
-```
-$10 M TVL × 2 % vol/day × 10 bps × 365 ≈ $730 k annual protocol revenue
-```
 
 ---
 
