@@ -183,10 +183,10 @@ async function main() {
   // }
 
   // Cancel withdraw
-  tx = await vaultContract.connect(signer).cancelWithdraw(10000);
+  tx = await vaultContract.connect(signer).cancelWithdraw(20000);
 
   // Set redemption period
-  //const tx1 = await vaultContract.connect(signer).setRedemptionPeriod(600);
+  //const tx1 = await vaultContract.connect(signer).setRedemptionPeriod(90000);
 
   // Initiate withdraw
   //const tx2 = await vaultContract.connect(signer).initiateWithdraw(2);

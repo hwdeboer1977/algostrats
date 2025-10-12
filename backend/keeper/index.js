@@ -271,7 +271,14 @@ async function processWithdrawQueue() {
       logger.info("withdraw.pipeline.start", { txHash: job.txHash });
 
       const script = path.resolve(__dirname, "./withdrawPipeline.js");
-      const args = [script, "--stage=init", `--usdc=${job.usdcHuman}`];
+      const args = [
+        script,
+        "--stage=init",
+        `--usdc=${job.usdcHuman}`,
+        `--user=${job.user}`,
+        `--initTx=${job.txHash}`,
+        `--unlockAt=${job.unlockAt}`, // <—— KEY: on-chain unlock timestamp (seconds)
+      ];
 
       await new Promise((resolve, reject) => {
         const child = spawn(process.execPath, args, {

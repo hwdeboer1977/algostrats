@@ -1,0 +1,22 @@
+# Dockerfile.api
+FROM node:20-bullseye
+
+# Install Python for your HL/Drift helpers launched from server.js
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install node deps
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Copy source
+COPY . .
+
+# (Optional) Install python deps if you have them
+# RUN pip3 install -r tools/hyperliquid/requirements.txt || true
+
+ENV NODE_ENV=production
+# Render provides PORT; your server reads it (defaults to 4000)
+CMD ["node", "backend/server/server.js"]

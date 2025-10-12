@@ -1,0 +1,25 @@
+services:
+  # --- Web API ---
+  - type: web
+    name: algostrats-api
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.api
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - fromGroup: algostrats-shared
+      - key: NODE_ENV
+        value: production
+
+  # --- Keeper (background worker) ---
+  - type: worker
+    name: algostrats-keeper
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.keeper
+    autoDeploy: true
+    envVars:
+      - fromGroup: algostrats-shared
+      - key: NODE_ENV
+        value: production

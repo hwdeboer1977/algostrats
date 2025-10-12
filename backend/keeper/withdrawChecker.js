@@ -11,6 +11,9 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
+// Keep small buffer
+const FINALIZE_BUFFER_SEC = Number(process.env.FINALIZE_BUFFER_SEC || 30);
+
 // --- Config ---
 const STATE_FILE = path.resolve(__dirname, "withdraw_state.json");
 const PIPELINE = path.resolve(__dirname, "withdrawPipeline.js");
@@ -31,6 +34,25 @@ const ONLY_REQ = getArg("reqId", null);
 // --- Utils ---
 function ts() {
   return new Date().toISOString();
+}
+
+// Prefer on-chain unlockAt (sec) if present; else recorded redeemAt (ms)
+function dueAtMs(r) {
+  if (typeof r.redeemAt === "number" && !Number.isNaN(r.redeemAt)) {
+    return r.redeemAt; // already ms
+  }
+  if (r.unlockAt != null) {
+    const u = Number(r.unlockAt);
+    if (!Number.isNaN(u) && u > 0) return u * 1000; // sec -> ms
+  }
+  return null;
+}
+
+function isDue(r, now = Date.now()) {
+  const t = dueAtMs(r);
+  if (t == null) return false;
+  const bufMs = FINALIZE_BUFFER_SEC * 1000; // small safety buffer
+  return now + bufMs >= t;
 }
 
 function load() {
@@ -83,11 +105,13 @@ function markPending(id, reason = "") {
 function pickDue(limit = 50) {
   const { requests } = load();
   const now = Date.now();
-  const list = requests.filter((r) => {
-    if (ONLY_REQ && r.reqId !== ONLY_REQ) return false;
-    const pendingish = r.status === "pending" || r.status === "processing";
-    return pendingish && r.redeemAt <= now;
-  });
+  const list = requests
+    .filter((r) => {
+      if (ONLY_REQ && r.reqId !== ONLY_REQ) return false;
+      const pendingish = r.status === "pending" || r.status === "processing";
+      return pendingish && isDue(r, now);
+    })
+    .sort((a, b) => (dueAtMs(a) ?? Infinity) - (dueAtMs(b) ?? Infinity));
   return list.slice(0, limit);
 }
 

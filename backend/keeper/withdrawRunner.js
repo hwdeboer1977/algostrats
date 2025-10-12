@@ -81,9 +81,15 @@ async function finalizeOne(r) {
 async function cmdInit() {
   const state = load();
   const reqId = getArg("reqId") || ensureReqId(state);
+  const unlockAtSec = getArg("unlockAt", "");
   const hoursDelay = Number(getArg("hours", "25"));
   const redeemAt = nowMs() + hoursDelay * 3600_000;
   const note = getArg("note", "");
+  const user = getArg("user", ""); // 0x...
+  const vault = getArg("vault", ""); // 0x...
+  const amount = getArg("amount", ""); // numeric string
+  const chainId = getArg("chainId", ""); // e.g., 42161
+  const initTx = getArg("initTx", ""); // 0x...
 
   const rec = {
     reqId,
@@ -94,6 +100,12 @@ async function cmdInit() {
     note,
     // optional metadata you might want to store:
     // chainId, vault, user, amount, txHashInit, etc.
+    user,
+    vault,
+    amount,
+    chainId,
+    initTx,
+    unlockAt: unlockAtSec || "", // keep raw seconds too (nice for debugging)
   };
 
   // upsert by reqId
@@ -194,6 +206,11 @@ function cmdList() {
       status: r.status,
       dueAtLocal: new Date(r.redeemAt).toLocaleString(),
       hoursLeft: fmt2(Math.max(0, hours(r.redeemAt - now))),
+      user: r.user ? r.user.slice(0, 6) + "…" + r.user.slice(-4) : "",
+      vault: r.vault ? r.vault.slice(0, 6) + "…" + r.vault.slice(-4) : "",
+      amount: r.amount || "",
+      chainId: r.chainId || "",
+      src: r.deadlineSource || "",
       note: r.note || "",
     }));
   console.table(rows);

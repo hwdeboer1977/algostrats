@@ -107,6 +107,9 @@ function getArg(name, def = undefined) {
 // read args
 const usdcHumanRaw = getArg("usdc"); // "--usdc=123.45"
 const usdcHuman = usdcHumanRaw != null ? Number(usdcHumanRaw) : undefined;
+const userArg = getArg("user", "");
+const initTxArg = getArg("initTx", "");
+const unlockAtArg = getArg("unlockAt", ""); // seconds since epoch (string)
 
 function runRunner(cmd, argsObj = {}) {
   const args = [
@@ -593,7 +596,8 @@ async function main() {
   console.log(">>> argv:", process.argv.slice(2));
   console.log(">>> Stage =", stage);
 
-  const reqId = getArg("reqId", `req_${Date.now()}`);
+  //const reqId = getArg("reqId", `req_${Date.now()}`);
+  const reqId = getArg("reqId", initTxArg || `req_${Date.now()}`);
   console.log(reqId);
 
   if (stage === "init") {
@@ -613,12 +617,20 @@ async function main() {
     console.log("Withdraw needed from Drift: ", neededUsdcDrift);
     console.log("Withdraw needed from HL: ", neededUsdcHL);
 
-    await step2_requestWithdrawDrift(neededUsdcDrift);
-    await step4_withdrawHL(neededUsdcHL);
+    //await step2_requestWithdrawDrift(neededUsdcDrift);
+    //await step4_withdrawHL(neededUsdcHL);
+
+    const amountUSDC = neededUsdcDrift + neededUsdcHL;
 
     await runRunner("init", {
       reqId,
       hours: process.env.REDEMPTION_DRIFT || 25,
+      vault: process.env.VAULT_ADDRESS, // "0x…"
+      amount: String(amountUSDC), // "250.00"
+      chainId: "42161",
+      ...(userArg && { user: userArg }),
+      ...(initTxArg && { initTx: initTxArg }),
+      ...(unlockAtArg && { unlockAt: unlockAtArg }), // <—— pass through
       note: "drift+hl withdraw",
     });
 
