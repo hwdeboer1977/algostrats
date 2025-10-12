@@ -1,9 +1,15 @@
-# Dockerfile.keeper
 FROM node:20-bullseye
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip ca-certificates && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci --omit=dev
+
+# Install deps for the worker (subfolder)
+COPY backend/keeper/package*.json ./backend/keeper/
+RUN bash -lc 'cd backend/keeper && (npm ci --omit=dev || npm install --omit=dev)'
+
+# Copy the rest of the repo
 COPY . .
 
 ENV NODE_ENV=production
