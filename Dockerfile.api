@@ -1,18 +1,17 @@
 FROM node:20-bullseye
-
-# Node + Python (your server spawns Python/MJS helpers)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip ca-certificates && rm -rf /var/lib/apt/lists/*
-
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
-# Install deps for the API (subfolder)
+# Root deps for tools/*
+COPY package*.json ./
+RUN (npm ci --omit=dev || npm install --omit=dev)
+
+# API deps
 COPY backend/server/package*.json ./backend/server/
 RUN bash -lc 'cd backend/server && (npm ci --omit=dev || npm install --omit=dev)'
 
-# Copy the rest of the repo (tools/, scripts/, etc.)
+# Rest of repo
 COPY . .
 
 ENV NODE_ENV=production
-# Keep working dir at repo root; start the API
 CMD ["node", "backend/server/server.js"]
