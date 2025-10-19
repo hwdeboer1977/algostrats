@@ -1,0 +1,27 @@
+version: "3.9"
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - ./.env.api.local
+    ports:
+      - "4000:4000" # API exposed on localhost:4000
+    environment:
+      - PORT=4000
+    # uncomment for live dev (mount code):
+    # volumes:
+    #   - .:/app
+    # command: npx nodemon backend/server/server.js
+
+  keeper:
+    build:
+      context: .
+      dockerfile: Dockerfile.keeper
+    env_file:
+      - ./.env.keeper.local
+    # no ports; it’s a background worker
+    # volumes:
+    #   - .:/app
+    # command: npx nodemon backend/keeper/index.js

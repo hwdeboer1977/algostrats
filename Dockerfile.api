@@ -1,17 +1,36 @@
 FROM node:20-bullseye
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Install Python and Yarn
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    corepack enable && \
+    corepack prepare yarn@stable --activate
+
 WORKDIR /app
 
-# Root deps for tools/*
-COPY package*.json ./
-RUN (npm ci --omit=dev || npm install --omit=dev)
+# Copy package manifests first
+COPY backend/server/package*.json          ./backend/server/
+COPY tools/bridge/package*.json            ./tools/bridge/
+COPY tools/drift/package.json tools/drift/yarn.lock  ./tools/drift/
+COPY tools/swap/package*.json              ./tools/swap/
 
-# API deps
-COPY backend/server/package*.json ./backend/server/
-RUN bash -lc 'cd backend/server && (npm ci --omit=dev || npm install --omit=dev)'
+# Install Node.js dependencies
+RUN cd backend/server && (npm ci --omit=dev || npm install --omit=dev)
+RUN cd tools/bridge && (npm ci --omit=dev || npm install --omit=dev)
+RUN cd tools/drift && yarn install --mode skip-build
+RUN cd tools/swap && (npm ci --omit=dev || npm install --omit=dev)
 
-# Rest of repo
+# Copy the rest of the repo
 COPY . .
+
+# Install Python dependencies if requirements.txt exists
+RUN if [ -f tools/hyperliquid/requirements.txt ]; then \
+        pip3 install --no-cache-dir -r tools/hyperliquid/requirements.txt; \
+    fi
 
 ENV NODE_ENV=production
 CMD ["node", "backend/server/server.js"]
