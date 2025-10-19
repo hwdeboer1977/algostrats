@@ -33,5 +33,30 @@ RUN pip3 install --no-cache-dir -r tools/hyperliquid/requirements.txt
 # Copy the rest of the repo
 COPY . .
 
+# Create startup script that generates config.json from environment variables
+# Create startup script that generates config.json from environment variables
+RUN echo '#!/bin/bash\n\
+echo "=== Entrypoint script starting ==="\n\
+echo "HYPERLIQUID_SECRET_KEY present: $([ -n "$HYPERLIQUID_SECRET_KEY" ] && echo YES || echo NO)"\n\
+if [ -n "$HYPERLIQUID_SECRET_KEY" ]; then\n\
+  mkdir -p /app/tools/hyperliquid\n\
+  cat > /app/tools/hyperliquid/config.json <<EOF\n\
+{\n\
+  "secret_key": "$HYPERLIQUID_SECRET_KEY",\n\
+  "account_address": "$HYPERLIQUID_ACCOUNT_ADDRESS",\n\
+  "ARBITRUM_ALCHEMY_MAINNET": "$ARBITRUM_ALCHEMY_MAINNET",\n\
+  "WALLET_SOLANA_SECRET": "$WALLET_SOLANA_SECRET",\n\
+  "SOLANA_PUBKEY": "$SOLANA_PUBKEY",\n\
+  "SOLANA_RPC": "$SOLANA_RPC"\n\
+}\n\
+EOF\n\
+  echo "Generated config.json successfully"\n\
+  ls -la /app/tools/hyperliquid/config.json\n\
+else\n\
+  echo "WARNING: HYPERLIQUID_SECRET_KEY not found in environment!"\n\
+fi\n\
+exec "$@"' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
 ENV NODE_ENV=production
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["node", "backend/server/server.js"]
