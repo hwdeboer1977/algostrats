@@ -117,8 +117,49 @@ app.use((req, res, next) => {
   next();
 });
 
+// --- put near the top, after the other requires ---
+function resolvePython(forFileAbs) {
+  // 1) Respect explicit override
+  if (process.env.PYTHON_BIN) {
+    return { cmd: process.env.PYTHON_BIN, argsPrefix: [], shell: false };
+  }
+
+  // 2) Try common venv locations relative to repo roots
+  //    Adjust roots if your repo layout differs.
+  const rootsToProbe = [
+    path.resolve(__dirname, "../../"), // repo root (2 up)
+    path.resolve(__dirname, "../"), // backend root
+    path.resolve(__dirname, "./"), // server dir
+  ];
+
+  const candidates = [];
+  for (const root of rootsToProbe) {
+    candidates.push(path.join(root, ".venv", "bin", "python"));
+    candidates.push(path.join(root, "venv", "bin", "python"));
+    candidates.push(path.join(root, "env", "bin", "python"));
+    candidates.push(path.join(root, ".venv", "Scripts", "python.exe"));
+    candidates.push(path.join(root, "venv", "Scripts", "python.exe"));
+    candidates.push(path.join(root, "env", "Scripts", "python.exe"));
+  }
+
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return { cmd: p, argsPrefix: [], shell: false };
+    } catch {}
+  }
+
+  // 3) Fall back to platform defaults
+  if (process.platform === "win32") {
+    // Prefer the Python launcher; needs shell:true to resolve "py"
+    return { cmd: "py", argsPrefix: ["-3"], shell: true };
+  }
+
+  // Unix: prefer python3, then python
+  return { cmd: "python3", argsPrefix: [], shell: false };
+}
+
 // ----------------------------
-// Runner (logs spawns)
+// Runner (logs spawns) — REPLACE YOURS
 // ----------------------------
 function runScript(scriptKey, argv = [], envAdd = {}, ctx = {}) {
   const file = SCRIPTS[scriptKey];
@@ -135,10 +176,17 @@ function runScript(scriptKey, argv = [], envAdd = {}, ctx = {}) {
   const ext = path.extname(file).toLowerCase();
   const isPy = ext === ".py";
 
-  let cmd;
+  // choose interpreter
+  let cmd,
+    argsPrefix = [],
+    forceShell = false;
   if (isPy) {
-    cmd = process.platform === "win32" ? "py" : "python3";
+    const r = resolvePython(file);
+    cmd = r.cmd;
+    argsPrefix = r.argsPrefix || [];
+    forceShell = Boolean(r.shell);
   } else {
+    // Node for .cjs/.mjs scripts
     cmd =
       (process.execPath &&
         fs.existsSync(process.execPath) &&
@@ -146,14 +194,32 @@ function runScript(scriptKey, argv = [], envAdd = {}, ctx = {}) {
       "node";
   }
 
-  const args = [file, ...argv];
+  // working dir = script folder
   const desiredCwd = path.dirname(file);
   const cwd = fs.existsSync(desiredCwd) ? desiredCwd : undefined;
-  const shell =
-    process.platform === "win32" && (cmd === "node" || cmd === "py");
+
+  // Build PYTHONPATH: ensure script dir is first for relative imports
+  const addPyPath = isPy ? desiredCwd : "";
+  const PYTHONPATH =
+    addPyPath && process.env.PYTHONPATH
+      ? addPyPath + path.delimiter + process.env.PYTHONPATH
+      : addPyPath || process.env.PYTHONPATH;
+
+  // On Windows, allow shell for both node & python if needed
+  const shell = process.platform === "win32" ? forceShell : false;
+
+  const args = isPy ? [...argsPrefix, file, ...argv] : [file, ...argv];
 
   const envKeys = Object.keys(envAdd || {});
-  logger.info("spawn.start", { ...ctx, scriptKey, cmd, args, cwd, envKeys });
+  logger.info("spawn.start", {
+    ...ctx,
+    scriptKey,
+    cmd,
+    args,
+    cwd,
+    envKeys,
+    PYTHONPATH: PYTHONPATH ? "<set>" : "<inherit>",
+  });
 
   const t0 = Date.now();
   return new Promise((resolve) => {
@@ -162,7 +228,7 @@ function runScript(scriptKey, argv = [], envAdd = {}, ctx = {}) {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       shell,
-      env: { ...process.env, ...envAdd },
+      env: { ...process.env, PYTHONPATH, ...envAdd },
     });
 
     let out = "",
@@ -186,7 +252,7 @@ function runScript(scriptKey, argv = [], envAdd = {}, ctx = {}) {
         ok,
         code,
         output: out.trim(),
-        error: ok ? null : err || out || `exit ${code}`,
+        error: ok ? null : (err || out || `exit ${code}`).trim(),
       });
     });
   });

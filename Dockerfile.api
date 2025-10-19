@@ -18,19 +18,20 @@ COPY tools/bridge/package*.json            ./tools/bridge/
 COPY tools/drift/package.json tools/drift/yarn.lock  ./tools/drift/
 COPY tools/swap/package*.json              ./tools/swap/
 
+# Copy Python requirements BEFORE installing
+COPY tools/hyperliquid/requirements.txt    ./tools/hyperliquid/requirements.txt
+
 # Install Node.js dependencies
 RUN cd backend/server && (npm ci --omit=dev || npm install --omit=dev)
 RUN cd tools/bridge && (npm ci --omit=dev || npm install --omit=dev)
 RUN cd tools/drift && yarn install --mode skip-build
 RUN cd tools/swap && (npm ci --omit=dev || npm install --omit=dev)
 
+# Install Python dependencies
+RUN pip3 install --no-cache-dir -r tools/hyperliquid/requirements.txt
+
 # Copy the rest of the repo
 COPY . .
-
-# Install Python dependencies if requirements.txt exists
-RUN if [ -f tools/hyperliquid/requirements.txt ]; then \
-        pip3 install --no-cache-dir -r tools/hyperliquid/requirements.txt; \
-    fi
 
 ENV NODE_ENV=production
 CMD ["node", "backend/server/server.js"]
